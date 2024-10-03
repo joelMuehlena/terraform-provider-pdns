@@ -28,49 +28,49 @@ func NewPDNSClient(httpClient *http.Client, endpoint string, serverID string, ap
 }
 
 type PDNSZone struct {
-	ID               string   `json:"id"`
-	Name             string   `json:"name"`
-	Type             string   `json:"type"`
-	URL              string   `json:"url"`
-	Kind             string   `json:"kind"`
-	Rrsets           []Rrset  `json:"rrsets"`
-	Serial           int64    `json:"serial"`
-	NotifiedSerial   int64    `json:"notified_serial"`
-	EditedSerial     int64    `json:"edited_serial"`
-	Masters          []string `json:"masters"`
-	Dnssec           bool     `json:"dnssec"`
+	ID               string   `json:"id,omitempty"`
+	Name             string   `json:"name,omitempty"`
+	Type             string   `json:"type,omitempty"`
+	URL              string   `json:"url,omitempty"`
+	Kind             string   `json:"kind,omitempty"`
+	Rrsets           []Rrset  `json:"rrsets,omitempty"`
+	Serial           int64    `json:"serial,omitempty"`
+	NotifiedSerial   int64    `json:"notified_serial,omitempty"`
+	EditedSerial     int64    `json:"edited_serial,omitempty"`
+	Masters          []string `json:"masters,omitempty"`
+	Dnssec           bool     `json:"dnssec,omitempty"`
 	Nsec3Param       string   `json:"nsec3param,omitempty"`
 	Nsec3Narrow      bool     `json:"nsec3narrow,omitempty"`
-	Presigned        bool     `json:"presigned"`
-	SOAEdit          string   `json:"soa_edit"`
-	SOAEditAPI       string   `json:"soa_edit_api"`
-	APIRectify       bool     `json:"api_rectify"`
-	Zone             string   `json:"zone"`
-	Catalog          string   `json:"catalog"`
-	Account          string   `json:"account"`
-	Nameservers      []string `json:"nameservers"`
-	MasterTsigKeyIDS []string `json:"master_tsig_key_ids"`
-	SlaveTsigKeyIDS  []string `json:"slave_tsig_key_ids"`
+	Presigned        bool     `json:"presigned,omitempty"`
+	SOAEdit          string   `json:"soa_edit,omitempty"`
+	SOAEditAPI       string   `json:"soa_edit_api,omitempty"`
+	APIRectify       bool     `json:"api_rectify,omitempty"`
+	Zone             string   `json:"zone,omitempty"`
+	Catalog          string   `json:"catalog,omitempty"`
+	Account          string   `json:"account,omitempty"`
+	Nameservers      []string `json:"nameservers,omitempty"`
+	MasterTsigKeyIDS []string `json:"master_tsig_key_ids,omitempty"`
+	SlaveTsigKeyIDS  []string `json:"slave_tsig_key_ids,omitempty"`
 }
 
 type Rrset struct {
-	Name       string    `json:"name"`
-	Type       string    `json:"type"`
-	TTL        int64     `json:"ttl"`
-	Changetype string    `json:"changetype"`
-	Records    []Record  `json:"records"`
-	Comments   []Comment `json:"comments"`
+	Name       string    `json:"name,omitempty"`
+	Type       string    `json:"type,omitempty"`
+	TTL        int64     `json:"ttl,omitempty"`
+	Changetype string    `json:"changetype,omitempty"`
+	Records    []Record  `json:"records,omitempty"`
+	Comments   []Comment `json:"comments,omitempty"`
 }
 
 type Comment struct {
-	Content    string `json:"content"`
-	Account    string `json:"account"`
-	ModifiedAt int64  `json:"modified_at"`
+	Content    string `json:"content,omitempty"`
+	Account    string `json:"account,omitempty"`
+	ModifiedAt int64  `json:"modified_at,omitempty"`
 }
 
 type Record struct {
-	Content  string `json:"content"`
-	Disabled bool   `json:"disabled"`
+	Content  string `json:"content,omitempty"`
+	Disabled bool   `json:"disabled,omitempty"`
 }
 
 func (client *PDNSClient) getReq(ctx context.Context, method string, apiPath string, body io.Reader) (*http.Request, error) {
