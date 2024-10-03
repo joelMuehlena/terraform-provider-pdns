@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -17,7 +18,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
@@ -113,8 +116,11 @@ func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 			"name": schema.StringAttribute{
 				MarkdownDescription: "The Name of the zone to be created",
 				Required:            true,
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
 				Validators: []validator.String{
-					stringvalidator.RegexMatches(regexp.MustCompile("\\.$"), "Name must end with a dot"),
+					stringvalidator.RegexMatches(regexp.MustCompile(`\.$`), "Name must end with a dot"),
 				},
 			},
 			"dnssec": schema.BoolAttribute{
@@ -124,8 +130,11 @@ func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				Computed:            true,
 			},
 			"nameservers": schema.ListNestedAttribute{
-				MarkdownDescription: "",
+				MarkdownDescription: "The nameservers of the Zone",
 				Required:            true,
+				Validators: []validator.List{
+					listvalidator.SizeAtLeast(1),
+				},
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: map[string]schema.Attribute{
 						"hostname": schema.StringAttribute{
@@ -133,7 +142,7 @@ func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 							Description: "The hostname of the nameservers. Will be prefixed with the zone name if not ending with an explicit '.'",
 						},
 						"create_record": schema.BoolAttribute{
-							Required:            false,
+							Optional:            true,
 							Default:             booldefault.StaticBool(true),
 							Computed:            true,
 							MarkdownDescription: "If set to false no A record for the name server will be created",
@@ -460,45 +469,86 @@ func (r *ZoneResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 		data.SOA = objectValue
 	}
 
-	// FIXME: Parse Nameservers
-	/*elements := lo.Map(zone.Nameservers, func(item string, index int) attr.Value {
-		return types.StringValue(strings.ReplaceAll(item, "."+zone.Name, ""))
-	})
-	listValue, diags := types.ListValue(types.StringType, elements)
+	currentNameservers := make([]Nameserver, 0, len(data.Nameservers.Elements()))
+	diags := data.Nameservers.ElementsAs(ctx, &currentNameservers, false)
 	if diags.HasError() {
 		resp.Diagnostics = append(resp.Diagnostics, diags...)
 		return
 	}
 
-	data.Nameservers = listValue*/
+	nsDataTypes := map[string]attr.Type{
+		"address":       types.StringType,
+		"hostname":      types.StringType,
+		"create_record": types.BoolType,
+	}
+
+	elements := lo.Map(currentNameservers, func(item Nameserver, index int) attr.Value {
+		ns := lo.Ternary(strings.HasSuffix(item.Hostname, "."), item.Hostname, item.Hostname+"."+zone.Name)
+
+		nsRecord, isFound := lo.Find(zone.Rrsets, func(itemRset pdns_client.Rrset) bool {
+			if len(itemRset.Records) == 0 {
+				return false
+			}
+			return (itemRset.Type == "A" || itemRset.Type == "AAAA") &&
+				itemRset.Name == ns &&
+				itemRset.Records[0].Content == item.Address
+		})
+
+		// FIXME: Error
+		if !isFound {
+			panic("No record found for " + item.Hostname)
+		}
+
+		nsData := map[string]attr.Value{
+			"address":       types.StringValue(nsRecord.Records[0].Content),
+			"hostname":      types.StringValue(strings.ReplaceAll(nsRecord.Name, "."+zone.Name, "")),
+			"create_record": types.BoolValue(item.CreateRecord),
+		}
+
+		objValue, diags := types.ObjectValue(nsDataTypes, nsData)
+		// FIXME: Error
+		if diags.HasError() {
+		}
+
+		return objValue
+	})
+
+	listValue, diags := types.ListValue(types.ObjectType{AttrTypes: nsDataTypes}, elements)
+	if diags.HasError() {
+		resp.Diagnostics = append(resp.Diagnostics, diags...)
+		return
+	}
+
+	data.Nameservers = listValue
 	// Save updated data into Terraform state
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
 // TODO: Update zone
 func (r *ZoneResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
-	var data ZoneResourceModel
+	var plan, state ZoneResourceModel
 
 	// Read Terraform plan data into the model
-	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
 
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	resp.Diagnostics.AddError("Test", "In Update")
+	resp.Diagnostics.AddError("Test", fmt.Sprintf("%v", req))
+	resp.Diagnostics.AddError("Test", fmt.Sprintf("%v", state))
+	resp.Diagnostics.AddError("Test", fmt.Sprintf("%v", plan))
+
+	// TODO: use PATCH to update Rrsets (if new or deleted ns) soa changes
+	// if previous first ns changed change SOA
+
+	if !state.DNSSec.Equal(plan.DNSSec) || !state.Kind.Equal(plan.Kind) {
+		// TODO: use put if kind or dnssec changed
+	}
+
 	return
-
-	// If applicable, this is a greay to initialize any necessary
-	// provider client data and make a call using it.
-	// httpResp, err := r.client.Do(httpReq)
-	// if err != nil {
-	//     resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to update example, got error: %s", err))
-	//     return
-	// }
-
-	// Save updated data into Terraform state
-	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
 func (r *ZoneResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
@@ -529,5 +579,5 @@ func (r *ZoneResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 
 // TODO: Import zone by name
 func (r *ZoneResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resource.ImportStatePassthroughID(ctx, path.Root("id"), req, resp)
+	resource.ImportStatePassthroughID(ctx, path.Root("name"), req, resp)
 }
