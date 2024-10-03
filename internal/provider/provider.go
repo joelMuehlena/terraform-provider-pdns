@@ -87,6 +87,7 @@ func (p *PDNSProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 func (p *PDNSProvider) Resources(ctx context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		NewZoneResource,
+		NewRecordResource,
 	}
 }
 
