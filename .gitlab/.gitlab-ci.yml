@@ -1,0 +1,38 @@
+stages:
+  - publish
+
+publish-provider-to-github:
+  stage: publish
+  image:
+    name: alpine/git:2.45.2
+    entrypoint: [""]
+  before_script:
+    - apk update
+    - apk add rsync
+  script:
+    - chmod 600 $GITHUB_KEY
+    - mv $GITHUB_KEY /tmp/github_key
+    - cat /tmp/github_key
+    - mkdir -p ~/.ssh
+    - |
+      cat << EOF > ~/.ssh/config
+      Host github.com
+        HostName github.com
+        User git
+        IdentityFile /tmp/github_key
+        IdentitiesOnly yes
+        StrictHostKeyChecking no
+        UserKnownHostsFile /dev/null
+      EOF
+    - "git config --global user.email '$GITHUB_USERNAME'"
+    - "git config --global user.name 'Joel Mühlena'"
+    - git clone git@github.com:joelMuehlena/terraform-provider-pdns.git terraform-provider-pdns-GITHUB
+    - rsync -av --progress code/terraform/provider/terraform-provider-pdns/ terraform-provider-pdns-GITHUB/
+    - cd terraform-provider-pdns-GITHUB
+    - git add .
+    - git commit -m "New changed from upstream. Look there for more info"
+    - git push
+  rules:
+    - changes:
+        - code/terraform/provider/terraform-provider-pdns/*
+        - code/terraform/provider/terraform-provider-pdns/**/*
