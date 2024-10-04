@@ -10,6 +10,7 @@ publish-provider-to-github:
   script:
     - chmod 600 $GITHUB_KEY
     - mv $GITHUB_KEY /tmp/github_key
+    - mkdir -p ~/.ssh
     - |
       cat << EOF > ~/.ssh/config
       Host github.com
