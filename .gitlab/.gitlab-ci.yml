@@ -18,6 +18,8 @@ publish-provider-to-github:
         User git
         IdentityFile /tmp/github_key
         IdentitiesOnly yes
+        StrictHostKeyChecking no
+        UserKnownHostsFile /dev/null
       EOF
     - "git config --global user.email '$GITHUB_USERNAME'"
     - "git config --global user.name 'Joel Mühlena'"
