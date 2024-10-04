@@ -3,10 +3,12 @@ stages:
 
 publish-provider-to-github:
   stage: publish
-  image: alpine:3.20
+  image:
+    name: alpine/git:2.45.2
+    entrypoint: [""]
   before_script:
     - apk update
-    - apk add rsync git openssh
+    - apk add rsync
   script:
     - chmod 600 $GITHUB_KEY
     - mv $GITHUB_KEY /tmp/github_key
