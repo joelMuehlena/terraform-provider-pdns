@@ -10,6 +10,8 @@ publish-provider-to-github:
   script:
     - git config --global credential.helper store
     - echo https://$GITHUB_USERNAME:$GITHUB_PASSWORD@github.com > ~/.git-credentials
+    - git config --global user.email "$GITHUB_USERNAME"
+    - git config --global user.name "Joel Mühlena"
     - git clone https://github.com/joelMuehlena/terraform-provider-pdns.git terraform-provider-pdns-GITHUB
     - rsync -av --progress code/terraform/provider/terraform-provider-pdns/ terraform-provider-pdns-GITHUB/
     - cd terraform-provider-pdns-GITHUB
