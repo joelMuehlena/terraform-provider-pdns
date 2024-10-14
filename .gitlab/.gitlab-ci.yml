@@ -28,6 +28,7 @@ publish-provider-to-github:
     - git clone git@github.com:joelMuehlena/terraform-provider-pdns.git terraform-provider-pdns-GITHUB
     - rsync -av --progress code/terraform/provider/terraform-provider-pdns/ terraform-provider-pdns-GITHUB/
     - cd terraform-provider-pdns-GITHUB
+    - if git diff-index --quiet HEAD --; then exit 0; fi
     - git add .
     - git commit -m "New changed from upstream. Look there for more info"
     - git push
