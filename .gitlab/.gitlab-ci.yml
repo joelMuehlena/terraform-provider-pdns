@@ -35,3 +35,4 @@ publish-provider-to-github:
     - changes:
         - code/terraform/provider/terraform-provider-pdns/*
         - code/terraform/provider/terraform-provider-pdns/**/*
+    - when: never
