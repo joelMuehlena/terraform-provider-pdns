@@ -4,7 +4,7 @@ stages:
 publish-provider-to-github:
   stage: publish
   image:
-    name: alpine/git:2.45.2
+    name: alpine/git:v2.47.1
     entrypoint: [""]
   before_script:
     - apk update
