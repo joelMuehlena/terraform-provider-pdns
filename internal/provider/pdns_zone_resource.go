@@ -487,7 +487,7 @@ func (r *ZoneResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 		"create_record": types.BoolType,
 	}
 
-	elements := lo.Map(currentNameservers, func(item Nameserver, index int) attr.Value {
+	elements := lo.FilterMap(currentNameservers, func(item Nameserver, index int) (attr.Value, bool) {
 		ns := lo.Ternary(strings.HasSuffix(item.Hostname, "."), item.Hostname, item.Hostname+"."+zone.Name)
 
 		nsRecord, isFound := lo.Find(zone.Rrsets, func(itemRset pdns_client.Rrset) bool {
@@ -499,24 +499,36 @@ func (r *ZoneResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 				itemRset.Records[0].Content == item.Address
 		})
 
-		// FIXME: Error
-		if !isFound {
-			panic("No record found for " + item.Hostname)
-		}
+		var nsData map[string]attr.Value
 
-		nsData := map[string]attr.Value{
-			"address":       types.StringValue(nsRecord.Records[0].Content),
-			"hostname":      types.StringValue(strings.ReplaceAll(nsRecord.Name, "."+zone.Name, "")),
-			"create_record": types.BoolValue(item.CreateRecord),
+		if !isFound && item.CreateRecord {
+			resp.Diagnostics.AddError("Read error", fmt.Sprintf("Failed to read A or AAAA record for NS record (%s)", item.Hostname))
+			return nil, false
+		} else if !isFound && !item.CreateRecord {
+			nsData = map[string]attr.Value{
+				"address":       types.StringValue(item.Address),
+				"hostname":      types.StringValue(item.Hostname),
+				"create_record": types.BoolValue(item.CreateRecord),
+			}
+		} else {
+			nsData = map[string]attr.Value{
+				"address":       types.StringValue(nsRecord.Records[0].Content),
+				"hostname":      types.StringValue(strings.ReplaceAll(nsRecord.Name, "."+zone.Name, "")),
+				"create_record": types.BoolValue(item.CreateRecord),
+			}
 		}
 
 		objValue, diags := types.ObjectValue(nsDataTypes, nsData)
-		// FIXME: Error
 		if diags.HasError() {
+			diags = append(diags, diags...)
 		}
 
-		return objValue
+		return objValue, true
 	})
+
+	if resp.Diagnostics.HasError() {
+		return
+	}
 
 	listValue, diags := types.ListValue(types.ObjectType{AttrTypes: nsDataTypes}, elements)
 	if diags.HasError() {
@@ -665,7 +677,7 @@ func (r *ZoneResource) Update(ctx context.Context, req resource.UpdateRequest, r
 			})
 		}
 
-		tflog.Debug(ctx, "Updating records", map[string]interface{}{
+		tflog.Debug(ctx, "Updating records", map[string]any{
 			"records": records,
 		})
 
