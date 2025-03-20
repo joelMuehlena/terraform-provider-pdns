@@ -12,7 +12,7 @@ func Diff(a, b []Nameserver) ([]Nameserver, []Nameserver) {
 	// Find added or changed items
 	for _, ns := range a {
 		oldNs, exists := oldState[ns.Hostname]
-		if !exists || oldNs.Address != ns.Address || oldNs.CreateRecord != ns.CreateRecord {
+		if !exists || oldNs.Address != ns.Address {
 			// If not in old state, or if any value has changed
 			addedOrChanged = append(addedOrChanged, ns)
 		}

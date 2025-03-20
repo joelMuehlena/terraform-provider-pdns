@@ -55,9 +55,8 @@ type ZoneResourceModel struct {
 }
 
 type Nameserver struct {
-	Address      string `tfsdk:"address"`
-	Hostname     string `tfsdk:"hostname"`
-	CreateRecord bool   `tfsdk:"create_record"`
+	Address  *string `tfsdk:"address"`
+	Hostname string  `tfsdk:"hostname"`
 }
 
 type SOA struct {
@@ -113,7 +112,6 @@ var IP_REGEX = regexp.MustCompile(`^((([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25
 func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
 		MarkdownDescription: "PowerDNS DNS Zone Resource",
-
 		Attributes: map[string]schema.Attribute{
 			"name": schema.StringAttribute{
 				MarkdownDescription: "The Name of the zone to be created",
@@ -149,14 +147,8 @@ func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 							Required:    true,
 							Description: "The hostname of the nameservers. Will be prefixed with the zone name if not ending with an explicit '.'",
 						},
-						"create_record": schema.BoolAttribute{
-							Optional:            true,
-							Default:             booldefault.StaticBool(true),
-							Computed:            true,
-							MarkdownDescription: "If set to false no A record for the name server will be created",
-						},
 						"address": schema.StringAttribute{
-							Required:    true,
+							Optional:    true,
 							Description: "The IP Address of the nameserver",
 							Validators: []validator.String{
 								stringvalidator.RegexMatches(IP_REGEX, "The passed string is not a valid IPv4 or valid IPv6 Address"),
@@ -175,7 +167,7 @@ func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				},
 			},
 			"masters": schema.ListAttribute{
-				MarkdownDescription: "Masters of this zone should onlt be set if kind is Slave",
+				MarkdownDescription: "Masters of this zone should only be set if kind is Slave",
 				Optional:            true,
 				ElementType:         types.StringType,
 				// FIXME: Add Validator which ensures kind is set to only allowed types e.g. slave
@@ -346,13 +338,13 @@ func createZoneFromData(ctx context.Context, data ZoneResourceModel) (pdns_clien
 	}
 
 	for index, nameserver := range nameservers {
-		if !nameserver.CreateRecord {
+		if nameserver.Address == nil {
 			continue
 		}
 
 		var recordType string
 
-		parsedIP := net.ParseIP(nameserver.Address)
+		parsedIP := net.ParseIP(*nameserver.Address)
 		if parsedIP == nil {
 			zoneDiags = append(zoneDiags, diag.NewAttributeErrorDiagnostic(path.Root("nameservers").AtListIndex(index).AtMapKey("address"), "Parse Error", "Invalid IPv4 or IPv6 address"))
 			return pdns_client.PDNSZone{}, "", zoneDiags
@@ -369,7 +361,7 @@ func createZoneFromData(ctx context.Context, data ZoneResourceModel) (pdns_clien
 			Name: nameserver.Hostname,
 			Records: []pdns_client.Record{
 				{
-					Content: nameserver.Address,
+					Content: *nameserver.Address,
 				},
 			},
 		})
@@ -482,39 +474,36 @@ func (r *ZoneResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	}
 
 	nsDataTypes := map[string]attr.Type{
-		"address":       types.StringType,
-		"hostname":      types.StringType,
-		"create_record": types.BoolType,
+		"address":  types.StringType,
+		"hostname": types.StringType,
 	}
 
 	elements := lo.FilterMap(currentNameservers, func(item Nameserver, index int) (attr.Value, bool) {
 		ns := lo.Ternary(strings.HasSuffix(item.Hostname, "."), item.Hostname, item.Hostname+"."+zone.Name)
 
 		nsRecord, isFound := lo.Find(zone.Rrsets, func(itemRset pdns_client.Rrset) bool {
-			if len(itemRset.Records) == 0 {
+			if len(itemRset.Records) == 0 || item.Address == nil {
 				return false
 			}
 			return (itemRset.Type == "A" || itemRset.Type == "AAAA") &&
 				itemRset.Name == ns &&
-				itemRset.Records[0].Content == item.Address
+				itemRset.Records[0].Content == *item.Address
 		})
 
 		var nsData map[string]attr.Value
 
-		if !isFound && item.CreateRecord {
+		if !isFound && item.Address != nil {
 			resp.Diagnostics.AddError("Read error", fmt.Sprintf("Failed to read A or AAAA record for NS record (%s)", item.Hostname))
 			return nil, false
-		} else if !isFound && !item.CreateRecord {
+		} else if !isFound && item.Address == nil {
 			nsData = map[string]attr.Value{
-				"address":       types.StringValue(item.Address),
-				"hostname":      types.StringValue(item.Hostname),
-				"create_record": types.BoolValue(item.CreateRecord),
+				"address":  types.StringPointerValue(item.Address),
+				"hostname": types.StringValue(item.Hostname),
 			}
 		} else {
 			nsData = map[string]attr.Value{
-				"address":       types.StringValue(nsRecord.Records[0].Content),
-				"hostname":      types.StringValue(strings.ReplaceAll(nsRecord.Name, "."+zone.Name, "")),
-				"create_record": types.BoolValue(item.CreateRecord),
+				"address":  types.StringValue(nsRecord.Records[0].Content),
+				"hostname": types.StringValue(strings.ReplaceAll(nsRecord.Name, "."+zone.Name, "")),
 			}
 		}
 
@@ -579,12 +568,17 @@ func (r *ZoneResource) Update(ctx context.Context, req resource.UpdateRequest, r
 
 		addedOrChanged, deleted := Diff(newNameservers, currentNameservers)
 
-		for _, nameserver := range addedOrChanged {
-			var recordType string
+		tflog.Info(ctx, "DBG", map[string]any{"added": addedOrChanged, "del": deleted})
 
-			parsedIP := net.ParseIP(nameserver.Address)
+		for i, nameserver := range addedOrChanged {
+			var recordType string
+			if nameserver.Address == nil {
+				tflog.Info(ctx, "Skipping nameserver A or AAAA record, because Address is not set.", map[string]any{"path": path.Root("nameservers[" + strconv.Itoa(i) + "]").String()})
+				continue
+			}
+			parsedIP := net.ParseIP(*nameserver.Address)
 			if parsedIP == nil {
-				resp.Diagnostics.AddAttributeError(path.Root("nameservers"), "Parse Error", "Found invalid IPv4 or IPv6 address")
+				resp.Diagnostics.AddAttributeError(path.Root("nameservers["+strconv.Itoa(i)+"]"), "Parse Error", "Found invalid IPv4 or IPv6 address")
 				return
 			}
 
@@ -595,7 +589,7 @@ func (r *ZoneResource) Update(ctx context.Context, req resource.UpdateRequest, r
 			}
 
 			changeType := "REPLACE"
-			if !nameserver.CreateRecord {
+			if nameserver.Address == nil {
 				changeType = "DELETE"
 			}
 
@@ -605,18 +599,23 @@ func (r *ZoneResource) Update(ctx context.Context, req resource.UpdateRequest, r
 				Name:       lo.Ternary(strings.HasSuffix(nameserver.Hostname, "."), nameserver.Hostname, nameserver.Hostname+"."+plan.Name.ValueString()),
 				Records: []pdns_client.Record{
 					{
-						Content: nameserver.Address,
+						Content: *nameserver.Address,
 					},
 				},
 			})
 		}
 
-		for _, nameserver := range deleted {
+		for i, nameserver := range deleted {
 			var recordType string
 
-			parsedIP := net.ParseIP(nameserver.Address)
+			if nameserver.Address == nil {
+				resp.Diagnostics.AddAttributeError(path.Root("nameservers["+strconv.Itoa(i)+"]"), "Parse Error", "Address in removed nameserver is null")
+				return
+			}
+
+			parsedIP := net.ParseIP(*nameserver.Address)
 			if parsedIP == nil {
-				resp.Diagnostics.AddAttributeError(path.Root("nameservers"), "Parse Error", "Found invalid IPv4 or IPv6 address")
+				resp.Diagnostics.AddAttributeError(path.Root("nameservers["+strconv.Itoa(i)+"]"), "Parse Error", "Found invalid IPv4 or IPv6 address")
 				return
 			}
 
@@ -644,7 +643,7 @@ func (r *ZoneResource) Update(ctx context.Context, req resource.UpdateRequest, r
 			}),
 		})
 
-		if !state.SOA.Equal(plan.SOA) || !state.Nameservers.Elements()[0].Equal(plan.Nameservers.Elements()[0]) {
+		if !state.SOA.Equal(plan.SOA) || (len(plan.Nameservers.Elements()) >= 1 && len(state.Nameservers.Elements()) == 0) || !state.Nameservers.Elements()[0].Equal(plan.Nameservers.Elements()[0]) {
 
 			var newSoaData SOA
 			diags = plan.SOA.As(ctx, &newSoaData, basetypes.ObjectAsOptions{})
