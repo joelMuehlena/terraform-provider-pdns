@@ -103,7 +103,7 @@ func (client *PDNSClient) GetZone(ctx context.Context, zoneID string, withRrsets
 		limitToName = "&rrset_name=" + url.QueryEscape(limitToName)
 	}
 
-	req, err := client.getReq(ctx, http.MethodGet, fmt.Sprintf("zones/%s?rrsets=%t%s", zoneID, withRrsets, limitToName), nil)
+	req, err := client.getReq(ctx, http.MethodGet, fmt.Sprintf("zones/%s?rrsets=%t%s", url.QueryEscape(zoneID), withRrsets, limitToName), nil)
 	if err != nil {
 		return PDNSZone{}, err
 	}
@@ -120,7 +120,7 @@ func (client *PDNSClient) GetZone(ctx context.Context, zoneID string, withRrsets
 			ZoneID: zoneID,
 		}
 	} else if resp.StatusCode != http.StatusOK {
-		return PDNSZone{}, fmt.Errorf("Unexpected code")
+		return PDNSZone{}, fmt.Errorf("Unexpected code: %d", resp.StatusCode)
 	}
 
 	data, err := io.ReadAll(resp.Body)
@@ -138,7 +138,7 @@ func (client *PDNSClient) GetZone(ctx context.Context, zoneID string, withRrsets
 }
 
 func (client *PDNSClient) DeleteZone(ctx context.Context, zoneID string) error {
-	req, err := client.getReq(ctx, http.MethodDelete, "zones/"+zoneID, nil)
+	req, err := client.getReq(ctx, http.MethodDelete, "zones/"+url.QueryEscape(zoneID), nil)
 	if err != nil {
 		return err
 	}
@@ -192,7 +192,7 @@ func (client *PDNSClient) UpdateZone(ctx context.Context, zoneID string, zone PD
 		return err
 	}
 
-	req, err := client.getReq(ctx, http.MethodPut, "zones/"+zoneID, bytes.NewReader(data))
+	req, err := client.getReq(ctx, http.MethodPut, "zones/"+url.QueryEscape(zoneID), bytes.NewReader(data))
 	if err != nil {
 		return err
 	}
@@ -221,7 +221,7 @@ func (client *PDNSClient) UpdateZoneRecords(ctx context.Context, zoneID string, 
 		return err
 	}
 
-	req, err := client.getReq(ctx, http.MethodPatch, "zones/"+zoneID, bytes.NewReader(data))
+	req, err := client.getReq(ctx, http.MethodPatch, "zones/"+url.QueryEscape(zoneID), bytes.NewReader(data))
 	if err != nil {
 		return err
 	}
