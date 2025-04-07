@@ -250,7 +250,7 @@ func (r *ZoneResource) Create(ctx context.Context, req resource.CreateRequest, r
 		resp.Diagnostics.AddError("Authorization Error", "Not authorized to access pdns api")
 		return
 	} else if err != nil && !errors.As(err, &notFoundError) {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to do http request to pdns API, got error: %s", notFoundError.Error()))
+		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to do http request to pdns API, got error: %s", err.Error()))
 		return
 	}
 
