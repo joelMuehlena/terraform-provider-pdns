@@ -1,23 +1,32 @@
-# To get started with Dependabot version updates, you'll need to specify which
-# package ecosystems to update and where the package manifests are located.
-# Please see the documentation for all configuration options:
-# https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
-
 version: 2
 updates:
-  - package-ecosystem: "gomod"
-    directory: "/"
+  - package-ecosystem: gomod
+    directory: /
     schedule:
-      interval: "daily"
+      interval: daily
     open-pull-requests-limit: 35
     labels:
-      - "dependencies"
-      - "dependencies::go"
+      - dependencies
+      - dependencies::go
     assignees:
-      - "joelMuehlena"
+      - joelMuehlena
     reviewers:
-      - "joelMuehlena"
+      - joelMuehlena
     commit-message:
-      prefix: "deps"
-      include: "scope"
+      prefix: deps
+      include: scope
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    labels:
+      - dependencies
+      - dependencies::gh-actions
+    assignees:
+      - joelMuehlena
+    reviewers:
+      - joelMuehlena
+    commit-message:
+      prefix: deps
+      include: scope
 
