@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"crypto/tls"
 	"net/http"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
@@ -27,9 +28,10 @@ type PDNSProvider struct {
 }
 
 type PDNSProviderModel struct {
-	Endpoint types.String `tfsdk:"endpoint"`
-	APIKey   types.String `tfsdk:"api_key"`
-	ServerID types.String `tfsdk:"server_id"`
+	Endpoint      types.String `tfsdk:"endpoint"`
+	APIKey        types.String `tfsdk:"api_key"`
+	ServerID      types.String `tfsdk:"server_id"`
+	SkipTLSVerify types.Bool   `tfsdk:"skip_tls_verify"`
 }
 
 func (p *PDNSProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
@@ -55,6 +57,11 @@ func (p *PDNSProvider) Schema(ctx context.Context, req provider.SchemaRequest, r
 				Required:            true,
 				Sensitive:           true,
 			},
+			"skip_tls_verify": schema.BoolAttribute{
+				MarkdownDescription: "Whether the verification of TLS certificates with the remote should be skipped.",
+				Optional:            true,
+				Required:            false,
+			},
 		},
 	}
 }
@@ -72,7 +79,15 @@ func (p *PDNSProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 		data.ServerID = types.StringValue("localhost")
 	}
 
-	client := &http.Client{}
+	if data.SkipTLSVerify.IsNull() {
+		data.SkipTLSVerify = types.BoolValue(false)
+	}
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: data.SkipTLSVerify.ValueBool()},
+		},
+	}
 
 	resp.ResourceData = &PDNSProviderData{
 		pdnsClient: pdns_client.NewPDNSClient(
