@@ -43,16 +43,16 @@ func (p *PDNSProvider) Schema(ctx context.Context, req provider.SchemaRequest, r
 	resp.Schema = schema.Schema{
 		Attributes: map[string]schema.Attribute{
 			"endpoint": schema.StringAttribute{
-				MarkdownDescription: "Example provider attribute",
+				MarkdownDescription: "API Endpoint of the the PowerDNS Auth API-Server",
 				Optional:            false,
 				Required:            true,
 			},
 			"server_id": schema.StringAttribute{
-				MarkdownDescription: "Example provider attribute",
+				MarkdownDescription: "Server id. If unset defaults to `localhost`. See [PowerDNS API docs](https://doc.powerdns.com/authoritative/http-api/server.html) for mor info",
 				Optional:            true,
 			},
 			"api_key": schema.StringAttribute{
-				MarkdownDescription: "Example provider attribute",
+				MarkdownDescription: "API Key to authenticate against the PowerDNS server",
 				Optional:            false,
 				Required:            true,
 				Sensitive:           true,
