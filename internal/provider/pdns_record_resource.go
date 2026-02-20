@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
@@ -55,21 +56,24 @@ func (r *RecordResource) Schema(ctx context.Context, req resource.SchemaRequest,
 		Attributes: map[string]schema.Attribute{
 			"zone": schema.StringAttribute{
 				Required:            true,
-				MarkdownDescription: "ID of the zone in which the record should be created",
+				MarkdownDescription: "ID of the zone in which the record should be created. The name must end with a dot `.`.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
+				},
+				Validators: []validator.String{
+					stringvalidator.RegexMatches(regexp.MustCompile(`\.$`), "Name must end with a dot"),
 				},
 			},
 			"name": schema.StringAttribute{
 				Required:            true,
-				MarkdownDescription: "LValue of the record (name)",
+				MarkdownDescription: "LValue of the record (name). This value will be added as prefix to the name. Supports chaining by dot e.g. `sub.test` is a valid value.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
 			},
 			"type": schema.StringAttribute{
 				Required:            true,
-				MarkdownDescription: "Type of the record",
+				MarkdownDescription: "Type of the record e.g. A, AAAA or CNAME",
 			},
 			"ttl": schema.Int64Attribute{
 				Optional:            true,
@@ -78,12 +82,14 @@ func (r *RecordResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				Default:             int64default.StaticInt64(1800),
 			},
 			"comments": schema.ListAttribute{
-				ElementType: types.StringType,
-				Optional:    true,
+				ElementType:         types.StringType,
+				MarkdownDescription: "List of comments to append to the record",
+				Optional:            true,
 			},
 			"records": schema.ListAttribute{
-				ElementType: types.StringType,
-				Required:    true,
+				ElementType:         types.StringType,
+				Required:            true,
+				MarkdownDescription: "RValue to which the record points. For A type records this are IP Addresses. For CNAMEs this are other FQDNs and so on.",
 				Validators: []validator.List{
 					listvalidator.SizeAtLeast(1),
 					listvalidator.UniqueValues(),

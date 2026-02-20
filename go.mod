@@ -1,8 +1,6 @@
 module gitlab.com/joelMuehlena/homelab/code/terraform/provider/terraform-provider-pdns
 
-go 1.24.6
-
-toolchain go1.25.0
+go 1.25.7
 
 require (
 	github.com/hashicorp/terraform-plugin-framework v1.17.0
