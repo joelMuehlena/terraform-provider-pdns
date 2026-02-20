@@ -46,7 +46,7 @@ resource "pdns_zone" "example_com" {
 
 ### Required
 
-- `name` (String) The Name of the zone to be created
+- `name` (String) The Name of the zone to be created. Must end with a dot
 - `nameservers` (Attributes List) The nameservers of the Zone (see [below for nested schema](#nestedatt--nameservers))
 - `soa` (Attributes) (see [below for nested schema](#nestedatt--soa))
 
@@ -65,7 +65,7 @@ resource "pdns_zone" "example_com" {
 
 Required:
 
-- `hostname` (String) The hostname of the nameservers. Will be prefixed with the zone name if not ending with an explicit '.'
+- `hostname` (String) The hostname of the nameservers. Will be suffixed with the zone name if not ending with an explicit '.'
 
 Optional:
 
@@ -77,11 +77,11 @@ Optional:
 
 Required:
 
-- `rname` (String) The RName of the SOA record. Represents the administrator's email address. It will be prefixed with the zone name unless ending with an explicit '.'
+- `rname` (String) The RName of the SOA record. Represents the administrator's email address. It will be suffixed with the zone name unless ending with an explicit '.'
 
 Optional:
 
-- `create_record` (Boolean) If set to false will not create the SOA record
+- `create_record` (Boolean) If set to false the provider will not create the SOA record
 - `expire` (Number) If a secondary server does not get a response from the primary server for this amount of time, it should stop responding to queries for the zone.
 - `refresh` (Number) The length of time (in seconds) secondary servers should wait before asking primary servers for the SOA record to see if it has been updated.
 - `retry` (Number) The length of time a server should wait for asking an unresponsive primary nameserver for an update again.

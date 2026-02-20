@@ -114,7 +114,7 @@ func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 		MarkdownDescription: "PowerDNS DNS Zone Resource",
 		Attributes: map[string]schema.Attribute{
 			"name": schema.StringAttribute{
-				MarkdownDescription: "The Name of the zone to be created",
+				MarkdownDescription: "The Name of the zone to be created. Must end with a dot",
 				Required:            true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
@@ -145,7 +145,7 @@ func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 					Attributes: map[string]schema.Attribute{
 						"hostname": schema.StringAttribute{
 							Required:    true,
-							Description: "The hostname of the nameservers. Will be prefixed with the zone name if not ending with an explicit '.'",
+							Description: "The hostname of the nameservers. Will be suffixed with the zone name if not ending with an explicit '.'",
 						},
 						"address": schema.StringAttribute{
 							Optional:    true,
@@ -178,14 +178,14 @@ func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				Required:            true,
 				Attributes: map[string]schema.Attribute{
 					"create_record": schema.BoolAttribute{
-						Description: "If set to false will not create the SOA record",
+						Description: "If set to false the provider will not create the SOA record",
 						Default:     booldefault.StaticBool(true),
 						Optional:    true,
 						Computed:    true,
 					},
 					"rname": schema.StringAttribute{
 						Required:    true,
-						Description: "The RName of the SOA record. Represents the administrator's email address. It will be prefixed with the zone name unless ending with an explicit '.'",
+						Description: "The RName of the SOA record. Represents the administrator's email address. It will be suffixed with the zone name unless ending with an explicit '.'",
 					},
 					"refresh": schema.Int64Attribute{
 						Description: "The length of time (in seconds) secondary servers should wait before asking primary servers for the SOA record to see if it has been updated.",

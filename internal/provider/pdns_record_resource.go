@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
@@ -58,6 +59,9 @@ func (r *RecordResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				MarkdownDescription: "ID of the zone in which the record should be created. The name must end with a dot `.`.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
+				},
+				Validators: []validator.String{
+					stringvalidator.RegexMatches(regexp.MustCompile(`\.$`), "Name must end with a dot"),
 				},
 			},
 			"name": schema.StringAttribute{
