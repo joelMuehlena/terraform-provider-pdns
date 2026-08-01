@@ -49,7 +49,7 @@ func (r *RecordResource) Metadata(ctx context.Context, req resource.MetadataRequ
 
 func (r *RecordResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "PowerDNS DNS Zone Resource",
+		MarkdownDescription: "Manages a single DNS record (rrset) within a PowerDNS zone.",
 
 		Attributes: map[string]schema.Attribute{
 			"zone": schema.StringAttribute{

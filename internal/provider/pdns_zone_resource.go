@@ -111,7 +111,7 @@ var IP_REGEX = regexp.MustCompile(`^((([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25
 
 func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "PowerDNS DNS Zone Resource",
+		MarkdownDescription: "Manages a PowerDNS DNS zone, including its SOA and nameserver (NS) records.",
 		Attributes: map[string]schema.Attribute{
 			"name": schema.StringAttribute{
 				MarkdownDescription: "The Name of the zone to be created. Must end with a dot",
@@ -158,7 +158,7 @@ func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				},
 			},
 			"kind": schema.StringAttribute{
-				MarkdownDescription: "",
+				MarkdownDescription: "The zone kind. One of `Native`, `Master`, `Slave`, `Producer` or `Consumer`. Defaults to `Native`.",
 				Optional:            true,
 				Default:             stringdefault.StaticString("Native"),
 				Computed:            true,
@@ -174,7 +174,7 @@ func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				Validators: []validator.List{},
 			},
 			"soa": schema.SingleNestedAttribute{
-				MarkdownDescription: "",
+				MarkdownDescription: "The Start Of Authority (SOA) record parameters for the zone.",
 				Required:            true,
 				Attributes: map[string]schema.Attribute{
 					"create_record": schema.BoolAttribute{
