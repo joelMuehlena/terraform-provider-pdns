@@ -3,12 +3,12 @@
 page_title: "pdns_zone Resource - pdns"
 subcategory: ""
 description: |-
-  PowerDNS DNS Zone Resource
+  Manages a PowerDNS DNS zone, including its SOA and nameserver (NS) records.
 ---
 
 # pdns_zone (Resource)
 
-PowerDNS DNS Zone Resource
+Manages a PowerDNS DNS zone, including its SOA and nameserver (NS) records.
 
 ## Example Usage
 
@@ -48,12 +48,12 @@ resource "pdns_zone" "example_com" {
 
 - `name` (String) The Name of the zone to be created. Must end with a dot
 - `nameservers` (Attributes List) The nameservers of the Zone (see [below for nested schema](#nestedatt--nameservers))
-- `soa` (Attributes) (see [below for nested schema](#nestedatt--soa))
+- `soa` (Attributes) The Start Of Authority (SOA) record parameters for the zone. (see [below for nested schema](#nestedatt--soa))
 
 ### Optional
 
 - `dnssec` (Boolean) Whether or not this zone is DNSSEC signed
-- `kind` (String)
+- `kind` (String) The zone kind. One of `Native`, `Master`, `Slave`, `Producer` or `Consumer`. Defaults to `Native`.
 - `masters` (List of String) Masters of this zone should only be set if kind is Slave
 
 ### Read-Only

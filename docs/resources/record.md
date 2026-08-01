@@ -3,12 +3,12 @@
 page_title: "pdns_record Resource - pdns"
 subcategory: ""
 description: |-
-  PowerDNS DNS Zone Resource
+  Manages a single DNS record (rrset) within a PowerDNS zone.
 ---
 
 # pdns_record (Resource)
 
-PowerDNS DNS Zone Resource
+Manages a single DNS record (rrset) within a PowerDNS zone.
 
 ## Example Usage
 
