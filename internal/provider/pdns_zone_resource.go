@@ -493,7 +493,8 @@ func (r *ZoneResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 
 		objValue, diags := types.ObjectValue(nsDataTypes, nsData)
 		if diags.HasError() {
-			diags = append(diags, diags...)
+			resp.Diagnostics.Append(diags...)
+			return nil, false
 		}
 
 		return objValue, true
