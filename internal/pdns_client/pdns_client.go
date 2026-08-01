@@ -98,39 +98,52 @@ func (client *PDNSClient) getReq(ctx context.Context, method string, apiPath str
 	return req, nil
 }
 
+// do builds and executes a request against the PDNS API and validates the
+// response status. It returns the response only when the status equals
+// wantStatus; otherwise it maps well-known status codes to typed errors
+// (PDNSUnauthorizedError, PDNSZoneNotFoundError) or a generic error carrying the
+// response body. Callers that get a non-nil response own closing its body.
+func (client *PDNSClient) do(ctx context.Context, method, apiPath, zoneID string, body io.Reader, wantStatus int) (*http.Response, error) {
+	req, err := client.getReq(ctx, method, apiPath, body)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := client.httpClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	if resp.StatusCode == wantStatus {
+		return resp, nil
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	switch resp.StatusCode {
+	case http.StatusUnauthorized:
+		return nil, &PDNSUnauthorizedError{}
+	case http.StatusNotFound:
+		return nil, &PDNSZoneNotFoundError{ZoneID: zoneID}
+	default:
+		data, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("unexpected status code %d: %s", resp.StatusCode, data)
+	}
+}
+
 func (client *PDNSClient) GetZone(ctx context.Context, zoneID string, withRrsets bool, limitToName string) (PDNSZone, error) {
 	if limitToName != "" {
 		limitToName = "&rrset_name=" + url.QueryEscape(limitToName)
 	}
 
-	req, err := client.getReq(ctx, http.MethodGet, fmt.Sprintf("zones/%s?rrsets=%t%s", url.QueryEscape(zoneID), withRrsets, limitToName), nil)
+	apiPath := fmt.Sprintf("zones/%s?rrsets=%t%s", url.QueryEscape(zoneID), withRrsets, limitToName)
+	resp, err := client.do(ctx, http.MethodGet, apiPath, zoneID, nil, http.StatusOK)
 	if err != nil {
 		return PDNSZone{}, err
 	}
-
-	resp, err := client.httpClient.Do(req)
-	if err != nil {
-		return PDNSZone{}, err
-	}
-
-	if resp.StatusCode == http.StatusUnauthorized {
-		return PDNSZone{}, &PDNSUnauthorizedError{}
-	} else if resp.StatusCode == http.StatusNotFound {
-		return PDNSZone{}, &PDNSZoneNotFoundError{
-			ZoneID: zoneID,
-		}
-	} else if resp.StatusCode != http.StatusOK {
-		return PDNSZone{}, fmt.Errorf("Unexpected code: %d", resp.StatusCode)
-	}
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return PDNSZone{}, err
-	}
+	defer func() { _ = resp.Body.Close() }()
 
 	var zone PDNSZone
-	err = json.Unmarshal(data, &zone)
-	if err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&zone); err != nil {
 		return PDNSZone{}, err
 	}
 
@@ -138,24 +151,11 @@ func (client *PDNSClient) GetZone(ctx context.Context, zoneID string, withRrsets
 }
 
 func (client *PDNSClient) DeleteZone(ctx context.Context, zoneID string) error {
-	req, err := client.getReq(ctx, http.MethodDelete, "zones/"+url.QueryEscape(zoneID), nil)
+	resp, err := client.do(ctx, http.MethodDelete, "zones/"+url.QueryEscape(zoneID), zoneID, nil, http.StatusNoContent)
 	if err != nil {
 		return err
 	}
-
-	resp, err := client.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-
-	if resp.StatusCode == http.StatusUnauthorized {
-		return &PDNSUnauthorizedError{}
-	} else if resp.StatusCode != http.StatusNoContent {
-		data, _ := io.ReadAll(resp.Body)
-
-		return fmt.Errorf("Unexpected code %d, %s", resp.StatusCode, data)
-	}
-
+	_ = resp.Body.Close()
 	return nil
 }
 
@@ -165,23 +165,11 @@ func (client *PDNSClient) CreateZone(ctx context.Context, zone PDNSZone) (PDNSZo
 		return PDNSZone{}, err
 	}
 
-	req, err := client.getReq(ctx, http.MethodPost, "zones", bytes.NewReader(data))
+	resp, err := client.do(ctx, http.MethodPost, "zones", zone.ID, bytes.NewReader(data), http.StatusCreated)
 	if err != nil {
 		return PDNSZone{}, err
 	}
-
-	resp, err := client.httpClient.Do(req)
-	if err != nil {
-		return PDNSZone{}, err
-	}
-
-	if resp.StatusCode == http.StatusUnauthorized {
-		return PDNSZone{}, &PDNSUnauthorizedError{}
-	} else if resp.StatusCode != http.StatusCreated {
-		data, _ := io.ReadAll(resp.Body)
-
-		return PDNSZone{}, fmt.Errorf("Unexpected code %d, %s", resp.StatusCode, data)
-	}
+	_ = resp.Body.Close()
 
 	return PDNSZone{}, nil
 }
@@ -192,26 +180,11 @@ func (client *PDNSClient) UpdateZone(ctx context.Context, zoneID string, zone PD
 		return err
 	}
 
-	req, err := client.getReq(ctx, http.MethodPut, "zones/"+url.QueryEscape(zoneID), bytes.NewReader(data))
+	resp, err := client.do(ctx, http.MethodPut, "zones/"+url.QueryEscape(zoneID), zoneID, bytes.NewReader(data), http.StatusNoContent)
 	if err != nil {
 		return err
 	}
-
-	resp, err := client.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-
-	if resp.StatusCode == http.StatusUnauthorized {
-		return &PDNSUnauthorizedError{}
-	} else if resp.StatusCode == http.StatusNotFound {
-		return &PDNSZoneNotFoundError{}
-	} else if resp.StatusCode != http.StatusNoContent {
-		data, _ := io.ReadAll(resp.Body)
-
-		return fmt.Errorf("Unexpected code %d, %s", resp.StatusCode, data)
-	}
-
+	_ = resp.Body.Close()
 	return nil
 }
 
@@ -221,25 +194,10 @@ func (client *PDNSClient) UpdateZoneRecords(ctx context.Context, zoneID string, 
 		return err
 	}
 
-	req, err := client.getReq(ctx, http.MethodPatch, "zones/"+url.QueryEscape(zoneID), bytes.NewReader(data))
+	resp, err := client.do(ctx, http.MethodPatch, "zones/"+url.QueryEscape(zoneID), zoneID, bytes.NewReader(data), http.StatusNoContent)
 	if err != nil {
 		return err
 	}
-
-	resp, err := client.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-
-	if resp.StatusCode == http.StatusUnauthorized {
-		return &PDNSUnauthorizedError{}
-	} else if resp.StatusCode == http.StatusNotFound {
-		return &PDNSZoneNotFoundError{}
-	} else if resp.StatusCode != http.StatusNoContent {
-		data, _ := io.ReadAll(resp.Body)
-
-		return fmt.Errorf("Unexpected code %d, %s", resp.StatusCode, data)
-	}
-
+	_ = resp.Body.Close()
 	return nil
 }
