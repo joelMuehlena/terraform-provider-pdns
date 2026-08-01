@@ -268,11 +268,7 @@ func (r *ZoneResource) Create(ctx context.Context, req resource.CreateRequest, r
 	data.Serial = types.StringValue(serial)
 
 	zone, err = r.providerData.pdnsClient.CreateZone(ctx, newZone)
-	if err != nil && errors.As(err, &unauthorizedError) {
-		resp.Diagnostics.AddError("Authorization Error", "Not authorized to access pdns api")
-		return
-	} else if err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to do http request to pdns API, got error: %s", err))
+	if handleClientError(&resp.Diagnostics, err) {
 		return
 	}
 
@@ -296,12 +292,10 @@ func createZoneFromData(ctx context.Context, data ZoneResourceModel) (pdns_clien
 		zoneDiags = append(zoneDiags, diags...)
 		return pdns_client.PDNSZone{}, "", zoneDiags
 	}
-	soa.RName = lo.Ternary(strings.HasSuffix(soa.RName, "."), soa.RName, soa.RName+"."+name)
+	soa.RName = fqdn(soa.RName, name)
 
 	nameservers = lo.Map(nameservers, func(item Nameserver, index int) Nameserver {
-		if !strings.HasSuffix(item.Hostname, ".") {
-			item.Hostname = item.Hostname + "." + name
-		}
+		item.Hostname = fqdn(item.Hostname, name)
 		return item
 	})
 
@@ -391,17 +385,7 @@ func (r *ZoneResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	}
 
 	zone, err := r.providerData.pdnsClient.GetZone(ctx, data.Name.ValueString(), true, "")
-
-	var unauthorizedError *pdns_client.PDNSUnauthorizedError
-	var notFoundError *pdns_client.PDNSZoneNotFoundError
-	if err != nil && errors.As(err, &unauthorizedError) {
-		resp.Diagnostics.AddError("Authorization Error", "Not authorized to access pdns api")
-		return
-	} else if err != nil && errors.As(err, &notFoundError) {
-		resp.Diagnostics.AddError("Zone not found", notFoundError.Error())
-		return
-	} else if err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to do http request to pdns API, got error: %s", err))
+	if handleClientError(&resp.Diagnostics, err) {
 		return
 	}
 
@@ -479,7 +463,7 @@ func (r *ZoneResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	}
 
 	elements := lo.FilterMap(currentNameservers, func(item Nameserver, index int) (attr.Value, bool) {
-		ns := lo.Ternary(strings.HasSuffix(item.Hostname, "."), item.Hostname, item.Hostname+"."+zone.Name)
+		ns := fqdn(item.Hostname, zone.Name)
 
 		nsRecord, isFound := lo.Find(zone.Rrsets, func(itemRset pdns_client.Rrset) bool {
 			if len(itemRset.Records) == 0 || item.Address == nil {
@@ -541,9 +525,6 @@ func (r *ZoneResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		return
 	}
 
-	var unauthorizedError *pdns_client.PDNSUnauthorizedError
-	var notFoundError *pdns_client.PDNSZoneNotFoundError
-
 	if !state.Nameservers.Equal(plan.Nameservers) || !state.SOA.Equal(plan.SOA) {
 		records := make([]pdns_client.Rrset, 0)
 
@@ -596,7 +577,7 @@ func (r *ZoneResource) Update(ctx context.Context, req resource.UpdateRequest, r
 			records = append(records, pdns_client.Rrset{
 				Type:       recordType,
 				Changetype: changeType,
-				Name:       lo.Ternary(strings.HasSuffix(nameserver.Hostname, "."), nameserver.Hostname, nameserver.Hostname+"."+plan.Name.ValueString()),
+				Name:       fqdn(nameserver.Hostname, plan.Name.ValueString()),
 				Records: []pdns_client.Record{
 					{
 						Content: *nameserver.Address,
@@ -628,7 +609,7 @@ func (r *ZoneResource) Update(ctx context.Context, req resource.UpdateRequest, r
 			records = append(records, pdns_client.Rrset{
 				Type:       recordType,
 				Changetype: "DELETE",
-				Name:       lo.Ternary(strings.HasSuffix(nameserver.Hostname, "."), nameserver.Hostname, nameserver.Hostname+"."+plan.Name.ValueString()),
+				Name:       fqdn(nameserver.Hostname, plan.Name.ValueString()),
 			})
 		}
 
@@ -638,7 +619,7 @@ func (r *ZoneResource) Update(ctx context.Context, req resource.UpdateRequest, r
 			Name:       plan.Name.ValueString(),
 			Records: lo.Map(newNameservers, func(item Nameserver, index int) pdns_client.Record {
 				return pdns_client.Record{
-					Content: lo.Ternary(strings.HasSuffix(item.Hostname, "."), item.Hostname, item.Hostname+"."+plan.Name.ValueString()),
+					Content: fqdn(item.Hostname, plan.Name.ValueString()),
 				}
 			}),
 		})
@@ -652,8 +633,8 @@ func (r *ZoneResource) Update(ctx context.Context, req resource.UpdateRequest, r
 				return
 			}
 
-			nameserver := lo.Ternary(strings.HasSuffix(newNameservers[0].Hostname, "."), newNameservers[0].Hostname, newNameservers[0].Hostname+"."+plan.Name.ValueString())
-			rname := lo.Ternary(strings.HasSuffix(newSoaData.RName, "."), newSoaData.RName, newSoaData.RName+"."+plan.Name.ValueString())
+			nameserver := fqdn(newNameservers[0].Hostname, plan.Name.ValueString())
+			rname := fqdn(newSoaData.RName, plan.Name.ValueString())
 
 			records = append(records, pdns_client.Rrset{
 				Type:       "SOA",
@@ -681,14 +662,7 @@ func (r *ZoneResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		})
 
 		err = r.providerData.pdnsClient.UpdateZoneRecords(ctx, plan.Name.ValueString(), records)
-		if err != nil && errors.As(err, &unauthorizedError) {
-			resp.Diagnostics.AddError("Authorization Error", "Not authorized to access pdns api")
-			return
-		} else if err != nil && errors.As(err, &notFoundError) {
-			resp.Diagnostics.AddError("Zone not found", notFoundError.Error())
-			return
-		} else if err != nil {
-			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to do http request to pdns API, got error: %s", err))
+		if handleClientError(&resp.Diagnostics, err) {
 			return
 		}
 
@@ -702,14 +676,7 @@ func (r *ZoneResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		}
 
 		err := r.providerData.pdnsClient.UpdateZone(ctx, plan.Name.ValueString(), zoneUpdate)
-		if err != nil && errors.As(err, &unauthorizedError) {
-			resp.Diagnostics.AddError("Authorization Error", "Not authorized to access pdns api")
-			return
-		} else if err != nil && errors.As(err, &notFoundError) {
-			resp.Diagnostics.AddError("Zone not found", notFoundError.Error())
-			return
-		} else if err != nil {
-			resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to do http request to pdns API, got error: %s", err))
+		if handleClientError(&resp.Diagnostics, err) {
 			return
 		}
 	}
@@ -728,19 +695,7 @@ func (r *ZoneResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 	}
 
 	err := r.providerData.pdnsClient.DeleteZone(ctx, data.Name.ValueString())
-
-	var unauthorizedError *pdns_client.PDNSUnauthorizedError
-	var notFoundError *pdns_client.PDNSZoneNotFoundError
-	if err != nil && errors.As(err, &unauthorizedError) {
-		resp.Diagnostics.AddError("Authorization Error", "Not authorized to access pdns api")
-		return
-	} else if err != nil && errors.As(err, &notFoundError) {
-		resp.Diagnostics.AddError("Zone not found", notFoundError.Error())
-		return
-	} else if err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to do http request to pdns API, got error: %s", err))
-		return
-	}
+	handleClientError(&resp.Diagnostics, err)
 }
 
 // TODO: Import zone by name
