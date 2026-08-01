@@ -2,10 +2,8 @@ package provider
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"regexp"
-	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
@@ -148,7 +146,7 @@ func (r *RecordResource) Create(ctx context.Context, req resource.CreateRequest,
 		Type:       data.Type.ValueString(),
 		TTL:        data.TTL.ValueInt64(),
 		Changetype: "REPLACE",
-		Name:       lo.Ternary(strings.HasSuffix(data.Name.ValueString(), "."), data.Name.ValueString(), data.Name.ValueString()+"."+data.Zone.ValueString()),
+		Name:       fqdn(data.Name.ValueString(), data.Zone.ValueString()),
 		Records: lo.Map(records, func(item string, index int) pdns_client.Record {
 			return pdns_client.Record{
 				Content:  item,
@@ -161,17 +159,7 @@ func (r *RecordResource) Create(ctx context.Context, req resource.CreateRequest,
 			}
 		}),
 	}})
-
-	var unauthorizedError *pdns_client.PDNSUnauthorizedError
-	var notFoundError *pdns_client.PDNSZoneNotFoundError
-	if err != nil && errors.As(err, &unauthorizedError) {
-		resp.Diagnostics.AddError("Authorization Error", "Not authorized to access pdns api")
-		return
-	} else if err != nil && errors.As(err, &notFoundError) {
-		resp.Diagnostics.AddError("Zone not found", notFoundError.Error())
-		return
-	} else if err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to do http request to pdns API, got error: %s", err))
+	if handleClientError(&resp.Diagnostics, err) {
 		return
 	}
 
@@ -188,19 +176,9 @@ func (r *RecordResource) Read(ctx context.Context, req resource.ReadRequest, res
 		return
 	}
 
-	expandedName := lo.Ternary(strings.HasSuffix(data.Name.ValueString(), "."), data.Name.ValueString(), data.Name.ValueString()+"."+data.Zone.ValueString())
+	expandedName := fqdn(data.Name.ValueString(), data.Zone.ValueString())
 	zone, err := r.providerData.pdnsClient.GetZone(ctx, data.Zone.ValueString(), true, expandedName)
-
-	var unauthorizedError *pdns_client.PDNSUnauthorizedError
-	var notFoundError *pdns_client.PDNSZoneNotFoundError
-	if err != nil && errors.As(err, &unauthorizedError) {
-		resp.Diagnostics.AddError("Authorization Error", "Not authorized to access pdns api")
-		return
-	} else if err != nil && errors.As(err, &notFoundError) {
-		resp.Diagnostics.AddError("Zone not found", notFoundError.Error())
-		return
-	} else if err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to do http request to pdns API, got error: %s", err))
+	if handleClientError(&resp.Diagnostics, err) {
 		return
 	}
 
@@ -277,7 +255,7 @@ func (r *RecordResource) Update(ctx context.Context, req resource.UpdateRequest,
 		Type:       plan.Type.ValueString(),
 		TTL:        plan.TTL.ValueInt64(),
 		Changetype: "REPLACE",
-		Name:       lo.Ternary(strings.HasSuffix(plan.Name.ValueString(), "."), plan.Name.ValueString(), plan.Name.ValueString()+"."+plan.Zone.ValueString()),
+		Name:       fqdn(plan.Name.ValueString(), plan.Zone.ValueString()),
 		Records: lo.Map(records, func(item string, index int) pdns_client.Record {
 			return pdns_client.Record{
 				Content:  item,
@@ -290,17 +268,7 @@ func (r *RecordResource) Update(ctx context.Context, req resource.UpdateRequest,
 			}
 		}),
 	}})
-
-	var unauthorizedError *pdns_client.PDNSUnauthorizedError
-	var notFoundError *pdns_client.PDNSZoneNotFoundError
-	if err != nil && errors.As(err, &unauthorizedError) {
-		resp.Diagnostics.AddError("Authorization Error", "Not authorized to access pdns api")
-		return
-	} else if err != nil && errors.As(err, &notFoundError) {
-		resp.Diagnostics.AddError("Zone not found", notFoundError.Error())
-		return
-	} else if err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to do http request to pdns API, got error: %s", err))
+	if handleClientError(&resp.Diagnostics, err) {
 		return
 	}
 
@@ -319,21 +287,9 @@ func (r *RecordResource) Delete(ctx context.Context, req resource.DeleteRequest,
 	err := r.providerData.pdnsClient.UpdateZoneRecords(ctx, data.Zone.ValueString(), []pdns_client.Rrset{{
 		Type:       data.Type.ValueString(),
 		Changetype: "DELETE",
-		Name:       lo.Ternary(strings.HasSuffix(data.Name.ValueString(), "."), data.Name.ValueString(), data.Name.ValueString()+"."+data.Zone.ValueString()),
+		Name:       fqdn(data.Name.ValueString(), data.Zone.ValueString()),
 	}})
-
-	var unauthorizedError *pdns_client.PDNSUnauthorizedError
-	var notFoundError *pdns_client.PDNSZoneNotFoundError
-	if err != nil && errors.As(err, &unauthorizedError) {
-		resp.Diagnostics.AddError("Authorization Error", "Not authorized to access pdns api")
-		return
-	} else if err != nil && errors.As(err, &notFoundError) {
-		resp.Diagnostics.AddError("Zone not found", notFoundError.Error())
-		return
-	} else if err != nil {
-		resp.Diagnostics.AddError("Client Error", fmt.Sprintf("Unable to do http request to pdns API, got error: %s", err))
-		return
-	}
+	handleClientError(&resp.Diagnostics, err)
 }
 
 // TODO: Import record by name
