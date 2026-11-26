@@ -30,3 +30,19 @@ updates:
       prefix: deps
       include: scope
 
+  # Images of the acceptance tests, pinned in test/acc/images/*.Dockerfile
+  # (Dependabot does not follow the variables in the compose files).
+  - package-ecosystem: docker
+    directory: /test/acc/images
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - dependencies::docker
+    assignees:
+      - joelMuehlena
+    reviewers:
+      - joelMuehlena
+    commit-message:
+      prefix: deps
+      include: scope
