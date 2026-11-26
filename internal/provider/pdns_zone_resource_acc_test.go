@@ -185,6 +185,112 @@ func (e *accEnv) replaceRRset(t *testing.T, zoneName, name, typ string, contents
 	}
 }
 
+func accImportStep(config, name string) resource.TestStep {
+	return resource.TestStep{
+		Config:                               config,
+		ResourceName:                         "pdns_zone.z",
+		ImportState:                          true,
+		ImportStateId:                        name,
+		ImportStateVerify:                    true,
+		ImportStateVerifyIdentifierAttribute: "name",
+	}
+}
+
+func TestAccZoneResourceImport(t *testing.T) {
+	env := testAccPreCheck(t)
+
+	bodies := map[string]string{
+		"import": `
+  kind           = "Master"
+  lock_dnsupdate = true
+  nameservers = [
+    { hostname = "ns1", address = "10.0.0.1" },
+    { hostname = "ns2", address = "2001:db8::2" },
+    { hostname = "ns3.other.org." },
+  ]
+  soa = {
+    rname   = "hostmaster"
+    refresh = 3600
+    retry   = 600
+    expire  = 86400
+    ttl     = 300
+  }`,
+		// The default SOA record of PowerDNS imports as create_record = false.
+		"import-nosoa": `
+  nameservers = [{ hostname = "ns1.other.org." }]
+  soa = {
+    rname         = "hostmaster"
+    create_record = false
+  }`,
+	}
+	for label, body := range bodies {
+		t.Run(label, func(t *testing.T) {
+			name := env.zoneName(t, label)
+			config := accZoneConfig(env, name, body)
+			resource.ParallelTest(t, resource.TestCase{
+				ProtoV6ProviderFactories: testProviderFactories,
+				CheckDestroy:             env.checkZoneGone(name),
+				Steps: []resource.TestStep{
+					{Config: config},
+					// PowerDNS sets the serial (SOA-EDIT-API); the refresh stores it.
+					{RefreshState: true},
+					accImportStep(config, name),
+				},
+			})
+		})
+	}
+}
+
+func TestAccZoneResourceImportExisting(t *testing.T) {
+	env := testAccPreCheck(t)
+	name := env.zoneName(t, "import-existing")
+	_, err := env.client.CreateZone(context.Background(), pdns_client.PDNSZone{
+		Name:        name,
+		Kind:        "Native",
+		Nameservers: []string{"ns1." + name, "ns.other.org."},
+		Rrsets: []pdns_client.Rrset{
+			{Name: name, Type: "SOA", TTL: 3600, Records: []pdns_client.Record{{Content: "ns1." + name + " hostmaster." + name + " 2024010101 3600 600 86400 300"}}},
+			{Name: "ns1." + name, Type: "A", TTL: 3600, Records: []pdns_client.Record{{Content: "10.0.0.1"}}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create zone %s: %v", name, err)
+	}
+	config := accZoneConfig(env, name, `
+  nameservers = [
+    { hostname = "ns1", address = "10.0.0.1" },
+    { hostname = "ns.other.org." },
+  ]
+  soa = {
+    rname   = "hostmaster"
+    refresh = 3600
+    retry   = 600
+    expire  = 86400
+    ttl     = 300
+  }`)
+
+	resource.ParallelTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		CheckDestroy:             env.checkZoneGone(name),
+		Steps: []resource.TestStep{
+			{
+				Config:             config,
+				ResourceName:       "pdns_zone.z",
+				ImportState:        true,
+				ImportStateId:      name,
+				ImportStatePersist: true,
+			},
+			{
+				// The imported zone matches the configuration.
+				Config: config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+			},
+		},
+	})
+}
+
 func TestAccZoneResourceDrift(t *testing.T) {
 	env := testAccPreCheck(t)
 	name := env.zoneName(t, "drift")

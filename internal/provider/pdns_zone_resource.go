@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -210,25 +211,25 @@ func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 					"refresh": schema.Int64Attribute{
 						Description: "The length of time (in seconds) secondary servers should wait before asking primary servers for the SOA record to see if it has been updated.",
 						Optional:    true,
-						Default:     int64default.StaticInt64(86400),
+						Default:     int64default.StaticInt64(defaultSOARefresh),
 						Computed:    true,
 					},
 					"retry": schema.Int64Attribute{
 						Description: "The length of time a server should wait for asking an unresponsive primary nameserver for an update again.",
 						Optional:    true,
-						Default:     int64default.StaticInt64(7200),
+						Default:     int64default.StaticInt64(defaultSOARetry),
 						Computed:    true,
 					},
 					"expire": schema.Int64Attribute{
 						Description: "If a secondary server does not get a response from the primary server for this amount of time, it should stop responding to queries for the zone.",
 						Optional:    true,
-						Default:     int64default.StaticInt64(4000000),
+						Default:     int64default.StaticInt64(defaultSOAExpire),
 						Computed:    true,
 					},
 					"ttl": schema.Int64Attribute{
 						Description: "TTL of the zone data",
 						Optional:    true,
-						Default:     int64default.StaticInt64(11200),
+						Default:     int64default.StaticInt64(defaultSOATTL),
 						Computed:    true,
 					},
 				},
@@ -452,52 +453,19 @@ func (r *ZoneResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	data.Name = types.StringValue(zone.Name)
 	data.Serial = types.StringValue(fmt.Sprintf("%d", zone.Serial))
 
-	soaRecord, isFound := lo.Find(zone.Rrsets, func(item pdns_client.Rrset) bool {
-		return item.Type == "SOA" && item.Name == data.Name.ValueString()
-	})
-
-	var currentSoaData SOA
-	if isFound {
-		diags := data.SOA.As(ctx, &currentSoaData, basetypes.ObjectAsOptions{})
-		if diags.HasError() {
-			resp.Diagnostics = append(resp.Diagnostics, diags...)
-			return
-		}
-	}
-
-	// With create_record = false the SOA record is not managed by the
-	// provider; PowerDNS creates a default one that must not be read back
-	// into the configured soa values.
-	if isFound && currentSoaData.CreateRecord {
-		soa, err := soaModelFromRecord(soaRecord.Records[0].Content, zone.Name, currentSoaData.RName, currentSoaData.CreateRecord)
-		if err != nil {
-			resp.Diagnostics.AddError("Parsing Error", fmt.Sprintf("Failed to read SOA record: %s", err))
-			return
-		}
-
-		objectValue, diags := types.ObjectValueFrom(ctx, soa.AttributeTypes(), soa)
-		if diags.HasError() {
-			resp.Diagnostics = append(resp.Diagnostics, diags...)
-			return
-		}
-
-		data.SOA = objectValue
-	}
-
-	currentNameservers := make([]Nameserver, 0, len(data.Nameservers.Elements()))
-	diags := data.Nameservers.ElementsAs(ctx, &currentNameservers, false)
-	if diags.HasError() {
-		resp.Diagnostics = append(resp.Diagnostics, diags...)
-		return
-	}
-
-	listValue, diags := readNameservers(zone, currentNameservers)
+	soa, diags := readSOA(ctx, zone, data.SOA)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
+	data.SOA = soa
 
-	data.Nameservers = listValue
+	nameservers, diags := readZoneNameservers(ctx, zone, data.Nameservers)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	data.Nameservers = nameservers
 
 	locked, err := r.providerData.hasDNSUpdateLock(ctx, zone.Name)
 	if handleClientError(&resp.Diagnostics, err) {
@@ -625,7 +593,8 @@ func (r *ZoneResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 	handleClientError(&resp.Diagnostics, err)
 }
 
-// TODO: Import zone by name
+// ImportState imports a zone by its name. Read then builds soa and
+// nameservers from the zone's records (see readSOA and importNameservers).
 func (r *ZoneResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("name"), req, resp)
 }
@@ -651,6 +620,65 @@ func soaRrset(soa SOA, primaryNS, zoneName, serial string) pdns_client.Rrset {
 			},
 		},
 	}
+}
+
+// pdnsDefaultSOAMName is the primary nameserver of the SOA record PowerDNS
+// creates for a zone created without one (soa.create_record = false).
+const pdnsDefaultSOAMName = "a.misconfigured.dns.server.invalid."
+
+// Defaults of the soa attributes, also used for imported zones whose SOA
+// record is not managed by the provider.
+const (
+	defaultSOARefresh = 86400
+	defaultSOARetry   = 7200
+	defaultSOAExpire  = 4000000
+	defaultSOATTL     = 11200
+)
+
+// readSOA returns the soa attribute for the zone's SOA record, given the
+// current one. With create_record = false the SOA record is not managed by
+// the provider; PowerDNS creates a default one that must not be read back
+// into the configured soa values.
+//
+// On import current is null and the attribute is built from the record
+// alone: create_record is true unless the record is PowerDNS's default one.
+// For such a zone only rname is taken from the record and the other values
+// are the attribute defaults, as with create_record = false they are not
+// written to the server.
+func readSOA(ctx context.Context, zone pdns_client.PDNSZone, current types.Object) (types.Object, diag.Diagnostics) {
+	soaRecord, isFound := lo.Find(zone.Rrsets, func(item pdns_client.Rrset) bool {
+		return item.Type == "SOA" && item.Name == zone.Name && len(item.Records) > 0
+	})
+	if !isFound {
+		return current, nil
+	}
+	content := soaRecord.Records[0].Content
+
+	var configured SOA
+	if current.IsNull() || current.IsUnknown() {
+		configured.CreateRecord = !strings.HasPrefix(content, pdnsDefaultSOAMName+" ")
+	} else {
+		if diags := current.As(ctx, &configured, basetypes.ObjectAsOptions{}); diags.HasError() {
+			return current, diags
+		}
+		if !configured.CreateRecord {
+			return current, nil
+		}
+	}
+
+	soa, err := soaModelFromRecord(content, zone.Name, configured.RName, configured.CreateRecord)
+	if err != nil {
+		var diags diag.Diagnostics
+		diags.AddError("Parsing Error", fmt.Sprintf("Failed to read SOA record: %s", err))
+		return current, diags
+	}
+	if !configured.CreateRecord {
+		soa.Refresh = types.Int64Value(defaultSOARefresh)
+		soa.Retry = types.Int64Value(defaultSOARetry)
+		soa.Expire = types.Int64Value(defaultSOAExpire)
+		soa.TTL = types.Int64Value(defaultSOATTL)
+	}
+	return types.ObjectValueFrom(ctx, soa.AttributeTypes(), soa)
 }
 
 // soaModelFromRecord parses the content of a SOA record
@@ -738,6 +766,55 @@ func readNameservers(zone pdns_client.PDNSZone, current []Nameserver) (types.Lis
 	}
 
 	return types.ListValue(listType, elements)
+}
+
+// readZoneNameservers returns the nameservers attribute for the zone, given
+// the current one, which is null on import.
+func readZoneNameservers(ctx context.Context, zone pdns_client.PDNSZone, current types.List) (types.List, diag.Diagnostics) {
+	if current.IsNull() || current.IsUnknown() {
+		return types.ListValueFrom(ctx, types.ObjectType{AttrTypes: nameserverAttrTypes}, importNameservers(zone))
+	}
+
+	nameservers := make([]Nameserver, 0, len(current.Elements()))
+	if diags := current.ElementsAs(ctx, &nameservers, false); diags.HasError() {
+		return current, diags
+	}
+	return readNameservers(zone, nameservers)
+}
+
+// importNameservers builds the nameservers of an imported zone from its NS
+// rrset. The provider writes the first nameserver as primary (mname) of the
+// SOA record, so that one comes first; the others follow in the order the
+// server returns them (PowerDNS sorts them). Hostnames inside the zone are
+// relative to it, like the provider accepts them; their address is the
+// first A record at that name, or else the first AAAA record (glue).
+// Nameservers outside the zone get no address.
+func importNameservers(zone pdns_client.PDNSZone) []Nameserver {
+	nsRrset, _ := lo.Find(zone.Rrsets, func(rr pdns_client.Rrset) bool {
+		return rr.Type == "NS" && sameDNSName(rr.Name, zone.Name)
+	})
+	records := slices.Clone(nsRrset.Records)
+
+	soaRrset, _ := lo.Find(zone.Rrsets, func(rr pdns_client.Rrset) bool {
+		return rr.Type == "SOA" && sameDNSName(rr.Name, zone.Name)
+	})
+	if fields := strings.Fields(lo.FirstOrEmpty(soaRrset.Records).Content); len(fields) > 0 {
+		if i := slices.IndexFunc(records, func(r pdns_client.Record) bool { return sameDNSName(r.Content, fields[0]) }); i > 0 {
+			primary := records[i]
+			records = slices.Insert(slices.Delete(records, i, i+1), 0, primary)
+		}
+	}
+
+	return lo.Map(records, func(record pdns_client.Record, _ int) Nameserver {
+		ns := Nameserver{Hostname: relativeName(record.Content, zone.Name)}
+		if ns.Hostname == record.Content {
+			return ns
+		}
+		if glue := append(addressRecords(zone, record.Content, "A"), addressRecords(zone, record.Content, "AAAA")...); len(glue) > 0 {
+			ns.Address = &glue[0]
+		}
+		return ns
+	})
 }
 
 // addressRecords returns the contents of the rrset of the given type (A or

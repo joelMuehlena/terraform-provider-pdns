@@ -295,6 +295,126 @@ func TestZoneResourceNameserverAddressDrift(t *testing.T) {
 	})
 }
 
+// importStep imports pdns_zone.z by its name and verifies the imported
+// state against the state of the previous step.
+func importStep(config string) resource.TestStep {
+	return resource.TestStep{
+		Config:            config,
+		ResourceName:      "pdns_zone.z",
+		ImportState:       true,
+		ImportStateId:     "example.test.",
+		ImportStateVerify: true,
+		// The import ID is the zone name; there is no id attribute.
+		ImportStateVerifyIdentifierAttribute: "name",
+	}
+}
+
+func TestZoneResourceImport(t *testing.T) {
+	t.Parallel()
+
+	configs := map[string]string{
+		"managed SOA": `
+  kind           = "Master"
+  lock_dnsupdate = true
+  nameservers = [
+    { hostname = "ns1", address = "10.0.0.1" },
+    { hostname = "ns2", address = "2001:db8::2" },
+    { hostname = "ns.other.org." },
+  ]
+  soa = {
+    rname   = "hostmaster"
+    refresh = 3600
+    retry   = 600
+    expire  = 86400
+    ttl     = 300
+  }`,
+		"out of zone rname": `
+  nameservers = [{ hostname = "ns1" }]
+  soa         = { rname = "admin.other.org." }`,
+		// The default SOA record of PowerDNS imports as create_record = false.
+		"without SOA record": `
+  nameservers = [{ hostname = "ns1.other.org." }]
+  soa = {
+    rname         = "hostmaster"
+    create_record = false
+  }`,
+	}
+	for name, body := range configs {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			fake := newFakePDNS(t)
+			config := zoneConfig(fake, body)
+			resource.UnitTest(t, resource.TestCase{
+				ProtoV6ProviderFactories: testProviderFactories,
+				// Refresh first: without a managed SOA record, Create stores
+				// no serial, and the refresh stores the server's one.
+				Steps: []resource.TestStep{{Config: config}, {RefreshState: true}, importStep(config)},
+			})
+		})
+	}
+}
+
+func TestZoneResourceImportExisting(t *testing.T) {
+	t.Parallel()
+	fake := newFakePDNS(t)
+	fake.mutate(func(f *fakePDNS) {
+		f.zones["example.test"] = &fakeZone{name: "example.test.", kind: "Native", serial: 2024010101, metadata: map[string][]string{}, rrsets: []pdns_client.Rrset{
+			{Name: "example.test.", Type: "SOA", Records: []pdns_client.Record{{Content: "ns1.example.test. hostmaster.example.test. 2024010101 3600 600 86400 300"}}},
+			{Name: "example.test.", Type: "NS", Records: []pdns_client.Record{{Content: "ns1.example.test."}, {Content: "ns.other.org."}}},
+			{Name: "ns1.example.test.", Type: "A", Records: []pdns_client.Record{{Content: "10.0.0.1"}}},
+			{Name: "www.example.test.", Type: "A", Records: []pdns_client.Record{{Content: "10.0.0.80"}}},
+		}}
+	})
+	config := zoneConfig(fake, `
+  nameservers = [
+    { hostname = "ns1", address = "10.0.0.1" },
+    { hostname = "ns.other.org." },
+  ]
+  soa = {
+    rname   = "hostmaster"
+    refresh = 3600
+    retry   = 600
+    expire  = 86400
+    ttl     = 300
+  }`)
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:             config,
+				ResourceName:       "pdns_zone.z",
+				ImportState:        true,
+				ImportStateId:      "example.test.",
+				ImportStatePersist: true,
+				ImportStateCheck: func(states []*terraform.InstanceState) error {
+					want := map[string]string{
+						"soa.rname": "hostmaster", "soa.refresh": "3600", "soa.ttl": "300", "soa.create_record": "true",
+						"nameservers.#": "2", "nameservers.0.hostname": "ns1", "nameservers.0.address": "10.0.0.1",
+						"nameservers.1.hostname": "ns.other.org.", "serial": "2024010101", "lock_dnsupdate": "false",
+					}
+					for k, v := range want {
+						if got := states[0].Attributes[k]; got != v {
+							return fmt.Errorf("%s = %q, want %q", k, got, v)
+						}
+					}
+					if _, ok := states[0].Attributes["nameservers.1.address"]; ok {
+						return fmt.Errorf("nameservers.1.address = %q, want unset", states[0].Attributes["nameservers.1.address"])
+					}
+					return nil
+				},
+			},
+			{
+				// The imported zone matches the configuration.
+				Config: config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+			},
+		},
+	})
+}
+
 func TestZoneResourceErrors(t *testing.T) {
 	t.Parallel()
 

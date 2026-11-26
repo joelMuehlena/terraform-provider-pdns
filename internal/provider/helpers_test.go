@@ -15,6 +15,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/samber/lo"
 	"gitlab.com/joelMuehlena/homelab/code/terraform/provider/terraform-provider-pdns/internal/pdns_client"
 )
@@ -406,6 +407,84 @@ func TestReadAddress(t *testing.T) {
 		if (got == nil) != (tt.want == nil) || (got != nil && *got != *tt.want) {
 			t.Errorf("%s: readAddress = %v, want %v", name, lo.FromPtr(got), lo.FromPtr(tt.want))
 		}
+	}
+}
+
+func TestImportNameservers(t *testing.T) {
+	t.Parallel()
+	zone := pdns_client.PDNSZone{
+		Name: "example.com.",
+		Rrsets: []pdns_client.Rrset{
+			{Type: "NS", Name: "example.com.", Records: []pdns_client.Record{
+				{Content: "ns1.example.com."}, {Content: "ns2.example.com."}, {Content: "ns3.example.com."},
+				{Content: "ns.other.org."}, {Content: "ns.example.com.other.org."},
+			}},
+			{Type: "A", Name: "ns1.example.com.", Records: []pdns_client.Record{{Content: "10.0.0.1"}, {Content: "10.0.0.11"}}},
+			{Type: "AAAA", Name: "ns1.example.com.", Records: []pdns_client.Record{{Content: "2001:db8::1"}}},
+			{Type: "AAAA", Name: "ns2.example.com.", Records: []pdns_client.Record{{Content: "2001:db8::2"}}},
+			{Type: "A", Name: "ns.other.org.", Records: []pdns_client.Record{{Content: "10.0.0.9"}}},
+		},
+	}
+	imported := func(zone pdns_client.PDNSZone) []string {
+		return lo.Map(importNameservers(zone), func(ns Nameserver, _ int) string {
+			return ns.Hostname + "=" + lo.FromPtrOr(ns.Address, "-")
+		})
+	}
+	want := []string{"ns1=10.0.0.1", "ns2=2001:db8::2", "ns3=-", "ns.other.org.=-", "ns.example.com.other.org.=-"}
+	if got := imported(zone); !slices.Equal(got, want) {
+		t.Errorf("importNameservers = %v, want %v", got, want)
+	}
+
+	// The primary nameserver of the SOA record comes first.
+	zone.Rrsets = append(zone.Rrsets, pdns_client.Rrset{Type: "SOA", Name: "example.com.", Records: []pdns_client.Record{
+		{Content: "NS3.example.com. hostmaster.example.com. 1 2 3 4 5"},
+	}})
+	want = []string{"ns3=-", "ns1=10.0.0.1", "ns2=2001:db8::2", "ns.other.org.=-", "ns.example.com.other.org.=-"}
+	if got := imported(zone); !slices.Equal(got, want) {
+		t.Errorf("importNameservers with SOA = %v, want %v", got, want)
+	}
+	if got := importNameservers(pdns_client.PDNSZone{Name: "example.com."}); len(got) != 0 {
+		t.Errorf("without NS rrset: %v", got)
+	}
+}
+
+func TestReadSOAImport(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	null := types.ObjectNull(SOAModel{}.AttributeTypes())
+	tests := map[string]struct {
+		content string
+		want    SOAModel
+	}{
+		"managed": {"ns1.example.com. admin.example.com. 1 10 20 30 40", SOAModel{
+			RName: types.StringValue("admin"), Refresh: types.Int64Value(10), Retry: types.Int64Value(20),
+			Expire: types.Int64Value(30), TTL: types.Int64Value(40), CreateRecord: types.BoolValue(true),
+		}},
+		"powerdns default": {pdnsDefaultSOAMName + " hostmaster.example.com. 0 10800 3600 604800 3600", SOAModel{
+			RName: types.StringValue("hostmaster"), Refresh: types.Int64Value(defaultSOARefresh), Retry: types.Int64Value(defaultSOARetry),
+			Expire: types.Int64Value(defaultSOAExpire), TTL: types.Int64Value(defaultSOATTL), CreateRecord: types.BoolValue(false),
+		}},
+	}
+	for name, tt := range tests {
+		zone := pdns_client.PDNSZone{Name: "example.com.", Rrsets: []pdns_client.Rrset{
+			{Type: "SOA", Name: "example.com.", Records: []pdns_client.Record{{Content: tt.content}}},
+		}}
+		obj, diags := readSOA(ctx, zone, null)
+		if diags.HasError() {
+			t.Fatalf("%s: %v", name, diags)
+		}
+		var got SOAModel
+		if diags := obj.As(ctx, &got, basetypes.ObjectAsOptions{}); diags.HasError() {
+			t.Fatalf("%s: %v", name, diags)
+		}
+		if got != tt.want {
+			t.Errorf("%s: soa = %+v, want %+v", name, got, tt.want)
+		}
+	}
+
+	// Without a SOA record the attribute stays as it is.
+	if obj, diags := readSOA(ctx, pdns_client.PDNSZone{Name: "example.com."}, null); diags.HasError() || !obj.IsNull() {
+		t.Errorf("without SOA record: %v, %v", obj, diags)
 	}
 }
 
