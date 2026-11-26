@@ -66,8 +66,10 @@ type Rrset struct {
 }
 
 type Comment struct {
-	Content    string `json:"content,omitempty"`
-	Account    string `json:"account,omitempty"`
+	Content string `json:"content,omitempty"`
+	// Account is always sent: PowerDNS rejects comments without it (422 "Key
+	// 'account' not present or not a String").
+	Account    string `json:"account"`
 	ModifiedAt int64  `json:"modified_at,omitempty"`
 }
 
