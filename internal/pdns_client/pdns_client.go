@@ -188,6 +188,29 @@ func (client *PDNSClient) UpdateZone(ctx context.Context, zoneID string, zone PD
 	return nil
 }
 
+// zoneSettingsUpdate is a zone PUT body for the kind and DNSSEC settings.
+// Unlike PDNSZone it always carries dnssec, so it can be switched off.
+type zoneSettingsUpdate struct {
+	Kind   string `json:"kind,omitempty"`
+	Dnssec bool   `json:"dnssec"`
+}
+
+// UpdateZoneSettings sets the kind (left unchanged if empty) and the DNSSEC
+// state of a zone.
+func (client *PDNSClient) UpdateZoneSettings(ctx context.Context, zoneID, kind string, dnssec bool) error {
+	data, err := json.Marshal(zoneSettingsUpdate{Kind: kind, Dnssec: dnssec})
+	if err != nil {
+		return err
+	}
+
+	resp, err := client.do(ctx, http.MethodPut, "zones/"+url.QueryEscape(zoneID), &PDNSZoneNotFoundError{ZoneID: zoneID}, bytes.NewReader(data), http.StatusNoContent)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
 func (client *PDNSClient) UpdateZoneRecords(ctx context.Context, zoneID string, rrsets []Rrset) error {
 	data, err := json.Marshal(PDNSZone{Rrsets: rrsets})
 	if err != nil {

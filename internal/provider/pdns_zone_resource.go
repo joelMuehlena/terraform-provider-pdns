@@ -506,12 +506,7 @@ func (r *ZoneResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	}
 
 	if !state.DNSSec.Equal(plan.DNSSec) || !state.Kind.Equal(plan.Kind) {
-		zoneUpdate := pdns_client.PDNSZone{
-			Dnssec: plan.DNSSec.ValueBool(),
-			Kind:   plan.Kind.ValueString(),
-		}
-
-		err := r.providerData.pdnsClient.UpdateZone(ctx, plan.Name.ValueString(), zoneUpdate)
+		err := r.providerData.pdnsClient.UpdateZoneSettings(ctx, plan.Name.ValueString(), plan.Kind.ValueString(), plan.DNSSec.ValueBool())
 		if handleClientError(&resp.Diagnostics, err) {
 			return
 		}
