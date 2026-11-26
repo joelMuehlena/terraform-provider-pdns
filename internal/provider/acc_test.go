@@ -9,7 +9,7 @@ package provider
 //	PDNS_ACC_DNS_ADDR  optional host:port of the DNS listener, enables the
 //	                   RFC2136 update checks, e.g. 127.0.0.1:15353
 //
-// Otherwise they are skipped. `make testacc` starts a server in a container
+// Otherwise they are skipped. `mise run testacc` starts a server in a container
 // (see test/acc) and runs them. Every test uses its own random zone and key
 // names, so the tests run in parallel against one server.
 
