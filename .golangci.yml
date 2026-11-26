@@ -1,0 +1,30 @@
+---
+version: "2"
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - cyclop
+    - dogsled
+    - whitespace
+    - nilnil
+    - nonamedreturns
+    - misspell
+    - modernize
+    - exptostd
+    - reassign
+  settings:
+    cyclop:
+      max-complexity: 20
+  exclusions:
+    rules:
+      - path: '(.+)_test\.go'
+        linters:
+          - errcheck
