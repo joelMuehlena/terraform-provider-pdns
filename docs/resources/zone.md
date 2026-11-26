@@ -4,11 +4,14 @@ page_title: "pdns_zone Resource - pdns"
 subcategory: ""
 description: |-
   Manages a PowerDNS DNS zone, including its SOA and nameserver (NS) records.
+  Dynamic updates: unless the server runs with dnsupdate-require-tsig=yes (PowerDNS 5.0+), a zone without dnsupdate keys accepts unsigned updates from allow-dnsupdate-from. Set that option, or lock_dnsupdate = true on older servers.
 ---
 
 # pdns_zone (Resource)
 
 Manages a PowerDNS DNS zone, including its SOA and nameserver (NS) records.
+
+**Dynamic updates:** unless the server runs with `dnsupdate-require-tsig=yes` (PowerDNS 5.0+), a zone without dnsupdate keys accepts unsigned updates from `allow-dnsupdate-from`. Set that option, or `lock_dnsupdate = true` on older servers.
 
 ## Example Usage
 
@@ -54,7 +57,9 @@ resource "pdns_zone" "example_com" {
 
 - `dnssec` (Boolean) Whether or not this zone is DNSSEC signed
 - `kind` (String) The zone kind. One of `Native`, `Master`, `Slave`, `Producer` or `Consumer`. Defaults to `Native`.
-- `lock_dnsupdate` (Boolean) Refuse unsigned RFC2136 dynamic updates for this zone. PowerDNS only requires a signature while the zone's `TSIG-ALLOW-DNSUPDATE` metadata lists a key; while it is empty, unsigned updates from addresses permitted by `allow-dnsupdate-from` are accepted. With `true`, the provider keeps the placeholder `pdns-provider-dnsupdate-locked.` in that list, so only updates signed by keys attached with `pdns_zone_tsig_key` (`dnsupdate = true`) are accepted, and none while no key is attached. New zones are created as `Slave` (which does not apply updates), locked and only then switched to their `kind`, so they never accept unlocked updates. Set to `false` to remove the placeholder. Defaults to `true`.
+- `lock_dnsupdate` (Boolean) Refuse unsigned RFC2136 dynamic updates for this zone, for servers without `dnsupdate-require-tsig`. By default PowerDNS only requires a signature while the zone's `TSIG-ALLOW-DNSUPDATE` metadata lists a key; while it is empty (a new zone, or after the last dnsupdate key was removed), unsigned updates from addresses permitted by `allow-dnsupdate-from` are accepted. With `true`, the provider keeps the placeholder `pdns-provider-dnsupdate-locked.` in that list, so only updates signed by keys attached with `pdns_zone_tsig_key` (`dnsupdate = true`) are accepted, and none while no key is attached. New zones are then created as `Slave` (which does not apply updates), locked and only then switched to their `kind`, so they never accept unlocked updates. Setting it to `false` removes the placeholder.
+
+On PowerDNS 5.0 and later, prefer the server setting `dnsupdate-require-tsig=yes`: it refuses every update that is not signed by a key listed for the zone, for all zones and from the moment they exist, so this lock is not needed. Use the lock on 4.9 (which does not have the setting) or where the server configuration cannot be changed. The setting applies to every zone of the server; for per-zone control, also on 5.0+, leave `dnsupdate-require-tsig` off and set `lock_dnsupdate = true` only on the zones that must refuse unsigned updates. Defaults to `false`.
 - `masters` (List of String) Masters of this zone should only be set if kind is Slave
 
 ### Read-Only

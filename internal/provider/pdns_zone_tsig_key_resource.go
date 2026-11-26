@@ -130,8 +130,8 @@ func (r *ZoneTSIGKeyResource) Schema(ctx context.Context, req resource.SchemaReq
 			"dnsupdate": schema.BoolAttribute{
 				MarkdownDescription: "Allow the key to perform RFC2136 dynamic updates on the zone (`TSIG-ALLOW-DNSUPDATE` metadata). Defaults to `false`. " +
 					"PowerDNS only requires a signature while at least one key is allowed: once no key of the zone has `dnsupdate`, " +
-					"updates from addresses permitted by `allow-dnsupdate-from` are accepted unsigned, unless the zone is locked " +
-					"(`lock_dnsupdate` of `pdns_zone`, on by default).",
+					"updates from addresses permitted by `allow-dnsupdate-from` are accepted unsigned, unless the server runs with " +
+					"`dnsupdate-require-tsig=yes` (PowerDNS 5.0+) or the zone is locked (`lock_dnsupdate` of `pdns_zone`).",
 				Optional: true,
 				Computed: true,
 				Default:  booldefault.StaticBool(false),
