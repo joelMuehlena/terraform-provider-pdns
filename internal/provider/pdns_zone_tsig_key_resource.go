@@ -37,6 +37,8 @@ func NewZoneTSIGKeyResource() resource.Resource {
 
 type ZoneTSIGKeyResource struct {
 	providerData *PDNSProviderData
+	// retryConfig overrides defaultApplyRetry; nil in normal use.
+	retryConfig *applyRetry
 }
 
 type ZoneTSIGKeyResourceModel struct {
@@ -352,18 +354,36 @@ func (r *ZoneTSIGKeyResource) load(ctx context.Context, zone string) (zoneTSIGSt
 	}, nil
 }
 
-// Retry tuning for apply. PowerDNS has no atomic add/remove for the zone TSIG
-// lists, so concurrent writers (e.g. separate runs) can overwrite each other.
-// These are variables so tests can shorten the delays.
-var (
-	applyMaxWrites = 8
-	applySettle    = time.Second
-	// applyBackoff returns the delay before the given retry (1-based):
-	// jittered linear backoff of 50-250ms per attempt.
-	applyBackoff = func(attempt int) time.Duration {
-		return time.Duration(attempt) * time.Duration(50+rand.IntN(200)) * time.Millisecond
+// applyRetry tunes the conflict retry of apply. PowerDNS has no atomic
+// add/remove for the zone TSIG lists, so concurrent writers (e.g. separate
+// runs) can overwrite each other.
+type applyRetry struct {
+	maxWrites int
+	// settle is the delay before the final re-check after the zone matched.
+	settle time.Duration
+	// backoff returns the delay before the given retry (1-based).
+	backoff func(attempt int) time.Duration
+}
+
+// jitteredBackoff is a jittered linear backoff of 50-250ms per attempt.
+func jitteredBackoff(attempt int) time.Duration {
+	return time.Duration(attempt) * time.Duration(50+rand.IntN(200)) * time.Millisecond
+}
+
+// defaultApplyRetry is used by resources without their own retry settings.
+// It is a variable so tests can make it faster.
+var defaultApplyRetry = applyRetry{
+	maxWrites: 8,
+	settle:    time.Second,
+	backoff:   jitteredBackoff,
+}
+
+func (r *ZoneTSIGKeyResource) retry() applyRetry {
+	if r.retryConfig != nil {
+		return *r.retryConfig
 	}
-)
+	return defaultApplyRetry
+}
 
 // apply brings the zone's TSIG lists in line with want for the given key.
 // Lists are read-modify-written, so after each write the zone is re-read and
@@ -371,6 +391,7 @@ var (
 // is re-checked after a short settle delay to catch writes still in flight.
 // Callers must hold the zone lock to serialize writers within this process.
 func (r *ZoneTSIGKeyResource) apply(ctx context.Context, zone, keyID, keyName string, want tsigPurposes) error {
+	retry := r.retry()
 	writes := 0
 	settled := false
 
@@ -386,17 +407,17 @@ func (r *ZoneTSIGKeyResource) apply(ctx context.Context, zone, keyID, keyName st
 				return nil
 			}
 			settled = true
-			if err := sleepCtx(ctx, applySettle); err != nil {
+			if err := sleepCtx(ctx, retry.settle); err != nil {
 				return err
 			}
 			continue
 		}
 
-		if writes >= applyMaxWrites {
+		if writes >= retry.maxWrites {
 			return fmt.Errorf("TSIG key lists of zone %s were modified concurrently; gave up after %d attempts", zone, writes)
 		}
 		if writes > 0 {
-			if err := sleepCtx(ctx, applyBackoff(writes)); err != nil {
+			if err := sleepCtx(ctx, retry.backoff(writes)); err != nil {
 				return err
 			}
 		}

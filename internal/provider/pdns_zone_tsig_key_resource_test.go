@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
@@ -251,10 +252,17 @@ resource "pdns_zone_tsig_key" "x" {
 
 // newTestAttachment returns an attachment resource with its own provider
 // data, i.e. its own zone locks, like a separate Terraform run would have.
+//
+// It uses the production backoff (the jitter is what lets competing writers
+// converge) and a settle delay long enough to see writes still in flight on
+// a slow CI runner with the race detector.
 func newTestAttachment(fake *fakePDNS) *ZoneTSIGKeyResource {
-	return &ZoneTSIGKeyResource{providerData: &PDNSProviderData{
-		pdnsClient: pdns_client.NewPDNSClient(fake.srv.Client(), fake.srv.URL, "localhost", fakeAPIKey),
-	}}
+	return &ZoneTSIGKeyResource{
+		providerData: &PDNSProviderData{
+			pdnsClient: pdns_client.NewPDNSClient(fake.client, fake.srv.URL, "localhost", fakeAPIKey),
+		},
+		retryConfig: &applyRetry{maxWrites: 8, settle: 250 * time.Millisecond, backoff: jitteredBackoff},
+	}
 }
 
 func TestZoneTSIGKeyApplyConcurrentWriters(t *testing.T) {
@@ -335,8 +343,11 @@ func TestZoneTSIGKeyApplyGivesUp(t *testing.T) {
 		delete(f.zones["z.test"].metadata, metadataDNSUpdate)
 	}
 
-	err := newTestAttachment(fake).apply(context.Background(), "z.test.", "k.", "k", tsigPurposes{DNSUpdate: true})
-	if err == nil || !strings.Contains(err.Error(), "modified concurrently") {
+	r := newTestAttachment(fake)
+	r.retryConfig = &applyRetry{maxWrites: 3, settle: time.Millisecond, backoff: func(int) time.Duration { return 0 }}
+
+	err := r.apply(context.Background(), "z.test.", "k.", "k", tsigPurposes{DNSUpdate: true})
+	if err == nil || !strings.Contains(err.Error(), "gave up after 3 attempts") {
 		t.Fatalf("expected give-up error, got %v", err)
 	}
 }

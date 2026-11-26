@@ -22,9 +22,13 @@ var testProviderFactories = map[string]func() (tfprotov6.ProviderServer, error){
 }
 
 func TestMain(m *testing.M) {
-	// Keep the conflict retry of pdns_zone_tsig_key fast in tests.
-	applySettle = 10 * time.Millisecond
-	applyBackoff = func(attempt int) time.Duration { return time.Duration(attempt) * time.Millisecond }
+	// Keep the conflict retry of pdns_zone_tsig_key fast in tests that do
+	// not exercise concurrent writers. Those use newTestAttachment instead.
+	defaultApplyRetry = applyRetry{
+		maxWrites: 8,
+		settle:    10 * time.Millisecond,
+		backoff:   func(attempt int) time.Duration { return time.Duration(attempt) * time.Millisecond },
+	}
 
 	os.Exit(m.Run())
 }

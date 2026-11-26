@@ -22,6 +22,9 @@ const fakeAPIKey = "test-api-key"
 type fakePDNS struct {
 	t   *testing.T
 	srv *httptest.Server
+	// client keeps enough idle connections for many concurrent callers;
+	// the default of 2 per host makes them open (and exhaust) new ports.
+	client *http.Client
 
 	mu    sync.Mutex
 	zones map[string]*fakeZone
@@ -51,6 +54,11 @@ func newFakePDNS(t *testing.T) *fakePDNS {
 	}
 	f.srv = httptest.NewServer(http.HandlerFunc(f.serveHTTP))
 	t.Cleanup(f.srv.Close)
+
+	transport := f.srv.Client().Transport.(*http.Transport).Clone()
+	transport.MaxIdleConnsPerHost = 64
+	f.client = &http.Client{Transport: transport}
+	t.Cleanup(transport.CloseIdleConnections)
 	return f
 }
 
@@ -67,9 +75,13 @@ provider "pdns" {
 func fakeKey(name string) string { return strings.ToLower(strings.TrimSuffix(name, ".")) }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	// json.Marshal, not an Encoder: the Encoder's trailing newline is never
+	// read by the client's decoder, so the connection could not be reused
+	// and concurrent tests would exhaust local ports.
+	data, _ := json.Marshal(v)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	_, _ = w.Write(data)
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {
