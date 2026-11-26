@@ -310,12 +310,12 @@ func TestNameserverRecordChanges(t *testing.T) {
 			planned: []Nameserver{
 				{Hostname: "ns1", Address: new("10.0.0.1")},
 				{Hostname: "ns2"}, // no address: skipped
-				{Hostname: "ns3.other.org.", Address: new("2001:db8::3")},
+				{Hostname: "ns3.example.com.", Address: new("2001:db8::3")},
 			},
 			current: []Nameserver{{Hostname: "old", Address: new("10.0.0.9")}},
 			want: []pdns_client.Rrset{
 				{Type: "A", Changetype: "REPLACE", Name: "ns1.example.com.", Records: []pdns_client.Record{{Content: "10.0.0.1"}}},
-				{Type: "AAAA", Changetype: "REPLACE", Name: "ns3.other.org.", Records: []pdns_client.Record{{Content: "2001:db8::3"}}},
+				{Type: "AAAA", Changetype: "REPLACE", Name: "ns3.example.com.", Records: []pdns_client.Record{{Content: "2001:db8::3"}}},
 				{Type: "A", Changetype: "DELETE", Name: "old.example.com."},
 			},
 		},
