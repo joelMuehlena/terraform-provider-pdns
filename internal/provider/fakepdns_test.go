@@ -32,6 +32,8 @@ type fakePDNS struct {
 
 	// afterWrite, if set, runs (with mu held) after every successful write.
 	afterWrite func(f *fakePDNS, r *http.Request)
+	// reject, if set, makes requests it returns true for fail with 500.
+	reject func(r *http.Request) bool
 }
 
 type fakeZone struct {
@@ -108,6 +110,11 @@ func (f *fakePDNS) serveHTTP(w http.ResponseWriter, r *http.Request) {
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	if f.reject != nil && f.reject(r) {
+		writeError(w, http.StatusInternalServerError, "rejected by test")
+		return
+	}
 
 	written := false
 	switch segments[0] {
