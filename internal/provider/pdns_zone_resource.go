@@ -319,7 +319,11 @@ func isSecondaryKind(kind string) bool {
 // created as a Slave without primaries (updates are forwarded to its
 // primaries, of which there are none, and fail), then locked, and only then
 // switched to its real kind. Records, TTLs and the serial are the same as when
-// creating the zone with its kind directly. If a step after the create fails,
+// creating the zone with its kind directly. DNSSEC is enabled in the create
+// request already: PowerDNS signs a Slave zone just like any other, and
+// enabling it only with the kind switch fails for zones without a SOA record
+// (create_record = false) because rectifying them fails, while sending the
+// unchanged dnssec = true with the switch is a no-op. If a step after the create fails,
 // the zone is deleted again so it is not left half configured.
 func (r *ZoneResource) createLocked(ctx context.Context, zone pdns_client.PDNSZone) error {
 	client := r.providerData.pdnsClient
@@ -415,7 +419,7 @@ func createZoneFromData(ctx context.Context, data ZoneResourceModel) (pdns_clien
 	newZone := pdns_client.PDNSZone{
 		Name:   name,
 		Kind:   data.Kind.ValueString(),
-		Dnssec: false,
+		Dnssec: data.DNSSec.ValueBool(),
 		Nameservers: lo.Map(nameservers, func(item Nameserver, index int) string {
 			return item.Hostname
 		}),
