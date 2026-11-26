@@ -206,6 +206,77 @@ func TestZoneResourceNameserverGlue(t *testing.T) {
 	})
 }
 
+// checkMasters asserts the primaries of a zone on the fake server.
+func checkMasters(fake *fakePDNS, zoneName, kind string, want ...string) resource.TestCheckFunc {
+	return func(*terraform.State) error {
+		zone, ok := fake.zone(zoneName)
+		if !ok {
+			return fmt.Errorf("zone %s does not exist", zoneName)
+		}
+		if zone.kind != kind || !slices.Equal(zone.masters, want) {
+			return fmt.Errorf("zone kind=%s masters=%v, want kind=%s masters=%v", zone.kind, zone.masters, kind, want)
+		}
+		return nil
+	}
+}
+
+func TestZoneResourceMasters(t *testing.T) {
+	t.Parallel()
+	fake := newFakePDNS(t)
+	config := func(body string) string {
+		return zoneConfig(fake, body+`
+  nameservers = [{ hostname = "ns1" }]
+  soa         = { rname = "hostmaster" }`)
+	}
+	update := resource.ConfigPlanChecks{
+		PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction("pdns_zone.z", plancheck.ResourceActionUpdate)},
+	}
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				// The server's spelling of the primaries is no drift.
+				Config: config(`
+  kind    = "Slave"
+  masters = ["192.0.2.1:53", "2001:DB8::1", "[2001:db8::2]:5300"]`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("pdns_zone.z", "masters.0", "192.0.2.1:53"),
+					checkMasters(fake, "example.test.", "Slave", "192.0.2.1", "2001:db8::1", "[2001:db8::2]:5300"),
+				),
+			},
+			{
+				Config:           config(`kind = "Slave"` + "\n" + `masters = ["192.0.2.9"]`),
+				ConfigPlanChecks: update,
+				Check:            checkMasters(fake, "example.test.", "Slave", "192.0.2.9"),
+			},
+			{
+				// Changed out of band: read back and restored.
+				PreConfig: func() {
+					fake.mutate(func(f *fakePDNS) { f.zones["example.test"].masters = []string{"192.0.2.66"} })
+				},
+				Config:           config(`kind = "Slave"` + "\n" + `masters = ["192.0.2.9"]`),
+				ConfigPlanChecks: update,
+				Check:            checkMasters(fake, "example.test.", "Slave", "192.0.2.9"),
+			},
+			{
+				// No longer a secondary: the primaries are removed.
+				Config:           config(``),
+				ConfigPlanChecks: update,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckNoResourceAttr("pdns_zone.z", "masters"),
+					checkMasters(fake, "example.test.", "Native"),
+				),
+			},
+			{
+				Config:           config(`kind = "Slave"` + "\n" + `masters = ["192.0.2.1"]`),
+				ConfigPlanChecks: update,
+				Check:            checkMasters(fake, "example.test.", "Slave", "192.0.2.1"),
+			},
+		},
+	})
+}
+
 func TestZoneResourceWithoutSOARecord(t *testing.T) {
 	t.Parallel()
 	fake := newFakePDNS(t)
@@ -475,6 +546,8 @@ func TestZoneResourceErrors(t *testing.T) {
 		"invalid kind":      {`kind = "Bogus"` + "\n" + `nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = { rname = "h" }`, `Invalid Attribute Value Match`},
 		"missing soa":       {`nameservers = [{ hostname = "ns1" }]`, `"soa" is required`},
 		"missing soa rname": {`nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = {}`, `rname`},
+		"masters on Native": {`masters = ["192.0.2.1"]` + "\n" + `nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = { rname = "h" }`, `masters requires a secondary zone`},
+		"invalid primary":   {`kind = "Slave"` + "\n" + `masters = ["primary.example.org"]` + "\n" + `nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = { rname = "h" }`, `Invalid primary`},
 	}
 	for name, tt := range validation {
 		t.Run(name, func(t *testing.T) {

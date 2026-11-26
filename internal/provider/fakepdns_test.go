@@ -45,6 +45,7 @@ type fakeZone struct {
 	master   []string
 	slave    []string
 	metadata map[string][]string
+	masters  []string
 }
 
 func newFakePDNS(t *testing.T) *fakePDNS {
@@ -190,6 +191,7 @@ func (f *fakePDNS) createZone(w http.ResponseWriter, r *http.Request) bool {
 
 	zone := &fakeZone{name: in.Name, kind: in.Kind, dnssec: in.Dnssec, metadata: map[string][]string{}}
 	zone.rrsets = append(zone.rrsets, in.Rrsets...)
+	zone.setMasters(in.Masters)
 	if _, ok := zone.rrset(in.Name, "SOA"); !ok {
 		// Like PowerDNS, create a default SOA record if none is given.
 		zone.rrsets = append(zone.rrsets, pdns_client.Rrset{Name: in.Name, Type: "SOA", TTL: 3600, Records: []pdns_client.Record{{
@@ -251,6 +253,7 @@ func (f *fakePDNS) updateZone(w http.ResponseWriter, r *http.Request, zone *fake
 	if raw, ok := in["dnssec"]; ok {
 		_ = json.Unmarshal(raw, &zone.dnssec)
 	}
+	zone.updateMasters(in)
 
 	w.WriteHeader(http.StatusNoContent)
 	return true
@@ -392,6 +395,7 @@ func (z *fakeZone) view(query url.Values) map[string]any {
 		"serial":              z.serial,
 		"master_tsig_key_ids": nonNil(z.master),
 		"slave_tsig_key_ids":  nonNil(z.slave),
+		"masters":             nonNil(z.masters),
 	}
 	if query.Get("rrsets") == "false" {
 		return out
@@ -426,6 +430,7 @@ func (f *fakePDNS) zone(name string) (fakeZone, bool) {
 	cp.rrsets = slices.Clone(z.rrsets)
 	cp.master = slices.Clone(z.master)
 	cp.slave = slices.Clone(z.slave)
+	cp.masters = slices.Clone(z.masters)
 	cp.metadata = map[string][]string{}
 	for k, v := range z.metadata {
 		cp.metadata[k] = slices.Clone(v)
@@ -468,4 +473,24 @@ func (z fakeZone) rrset(name, typ string) (pdns_client.Rrset, bool) {
 		}
 	}
 	return pdns_client.Rrset{}, false
+}
+
+// setMasters stores the primaries of a zone in the spelling PowerDNS uses.
+func (z *fakeZone) setMasters(masters []string) {
+	z.masters = nil
+	for _, m := range masters {
+		if c, ok := canonicalPrimary(m); ok {
+			m = c
+		}
+		z.masters = append(z.masters, m)
+	}
+}
+
+// updateMasters applies the masters of a zone PUT body, if given.
+func (z *fakeZone) updateMasters(in map[string]json.RawMessage) {
+	if raw, ok := in["masters"]; ok {
+		var masters []string
+		_ = json.Unmarshal(raw, &masters)
+		z.setMasters(masters)
+	}
 }
