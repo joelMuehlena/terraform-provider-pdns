@@ -220,6 +220,10 @@ func (r *ZoneTSIGKeyResource) Read(ctx context.Context, req resource.ReadRequest
 
 	state, err := r.load(ctx, zone)
 	if isNotFound(err) {
+		resp.Diagnostics.AddWarning(
+			"Zone not found",
+			fmt.Sprintf("The zone %q no longer exists on the PowerDNS server, so the attachment of TSIG key %q was removed from state.", zone, keyID),
+		)
 		resp.State.RemoveResource(ctx)
 		return
 	}
@@ -229,6 +233,10 @@ func (r *ZoneTSIGKeyResource) Read(ctx context.Context, req resource.ReadRequest
 
 	current := state.purposesFor(keyID, keyName)
 	if !current.any() {
+		resp.Diagnostics.AddWarning(
+			"TSIG key attachment not found",
+			fmt.Sprintf("The TSIG key %q is no longer attached to zone %q for any purpose and was removed from state. It will be re-attached on the next apply.", keyID, zone),
+		)
 		resp.State.RemoveResource(ctx)
 		return
 	}
