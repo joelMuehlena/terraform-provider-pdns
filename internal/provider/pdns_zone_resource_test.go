@@ -789,29 +789,47 @@ func TestZoneResourceCreateDirect(t *testing.T) {
 func TestZoneResourceCreateRollsBack(t *testing.T) {
 	t.Parallel()
 
-	steps := map[string]func(r *http.Request) bool{
-		"lock fails": func(r *http.Request) bool {
-			return r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/metadata/")
-		},
-		"kind switch fails": func(r *http.Request) bool {
-			return r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/zones/example.test.")
-		},
+	lockFails := func(r *http.Request) bool {
+		return r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/metadata/")
 	}
-	for name, reject := range steps {
+	steps := map[string]struct {
+		kind   string
+		reject func(r *http.Request) bool
+	}{
+		"lock fails": {"Native", lockFails},
+		"kind switch fails": {"Native", func(r *http.Request) bool {
+			return r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/zones/example.test.")
+		}},
+		// Secondary zones are created directly and locked afterwards.
+		"Slave lock fails":    {"Slave", lockFails},
+		"Consumer lock fails": {"Consumer", lockFails},
+	}
+	for name, tt := range steps {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			fake := newFakePDNS(t)
-			fake.reject = reject
+			fake.reject = tt.reject
+
+			config := zoneConfig(fake, `
+  kind           = "`+tt.kind+`"
+  lock_dnsupdate = true
+  nameservers    = [{ hostname = "ns1" }]
+  soa            = { rname = "hostmaster" }`)
 
 			resource.UnitTest(t, resource.TestCase{
 				ProtoV6ProviderFactories: testProviderFactories,
-				Steps: []resource.TestStep{{
-					Config: zoneConfig(fake, `
-  lock_dnsupdate = true
-  nameservers    = [{ hostname = "ns1" }]
-  soa            = { rname = "hostmaster" }`),
-					ExpectError: regexp.MustCompile(`rejected by test`),
-				}},
+				Steps: []resource.TestStep{
+					{
+						Config:      config,
+						ExpectError: regexp.MustCompile(`rejected by test`),
+					},
+					{
+						// Nothing was left behind, so the next apply succeeds.
+						PreConfig: func() { fake.mutate(func(f *fakePDNS) { f.reject = nil }) },
+						Config:    config,
+						Check:     checkDNSUpdateList(fake, "example.test.", dnsupdateLockKey),
+					},
+				},
 				// The half-created zone is removed again.
 				CheckDestroy: checkZoneGone(fake, "example.test."),
 			})
