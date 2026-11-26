@@ -70,6 +70,14 @@ resource "pdns_record" "www" {
 
 See the [`docs/`](./docs) directory for the full resource reference.
 
+## Securing dynamic updates
+
+By default PowerDNS only requires a TSIG signature for RFC2136 updates while a zone's `TSIG-ALLOW-DNSUPDATE` lists a key. A zone without dnsupdate keys (a new zone, or after the last `pdns_zone_tsig_key` with `dnsupdate = true` is removed) accepts **unsigned** updates from every address in `allow-dnsupdate-from`.
+
+- **PowerDNS 5.0 and later:** run the server with `dnsupdate-require-tsig=yes`. Updates must then be signed by a key listed for the zone. A zone without keys refuses all updates, including validly signed ones by other keys, from the moment it exists.
+- **PowerDNS 4.9**, or servers whose configuration you can't change: set `lock_dnsupdate = true` on `pdns_zone`. The zone keeps a placeholder key in `TSIG-ALLOW-DNSUPDATE`, and new zones are created as `Slave`, locked, then switched to their kind, so they are never unlocked. 4.9 doesn't know `dnsupdate-require-tsig` and refuses to start with it.
+- In both cases, keep `allow-dnsupdate-from` as narrow as possible. The default is `127.0.0.0/8,::1`.
+
 ## Development
 
 Tools and tasks are managed with [mise](https://mise.jdx.dev/):

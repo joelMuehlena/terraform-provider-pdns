@@ -280,8 +280,8 @@ resource "pdns_zone_tsig_key" "a" {
 		ProtoV6ProviderFactories: testProviderFactories,
 		Steps: []resource.TestStep{
 			{
-				// Locked by default, before any key is attached.
-				Config: config("", false),
+				// Locked from creation, before any key is attached.
+				Config: config("lock_dnsupdate = true", false),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("pdns_zone.z", "lock_dnsupdate", "true"),
 					checkDNSUpdateList(fake, "example.test.", dnsupdateLockKey),
@@ -289,12 +289,12 @@ resource "pdns_zone_tsig_key" "a" {
 			},
 			{
 				// Attached keys are listed next to the placeholder.
-				Config: config("", true),
+				Config: config("lock_dnsupdate = true", true),
 				Check:  checkDNSUpdateList(fake, "example.test.", dnsupdateLockKey, "tenant-a"),
 			},
 			{
 				// Removing the last key keeps the zone locked.
-				Config: config("", false),
+				Config: config("lock_dnsupdate = true", false),
 				Check:  checkDNSUpdateList(fake, "example.test.", dnsupdateLockKey),
 			},
 			{
@@ -302,7 +302,7 @@ resource "pdns_zone_tsig_key" "a" {
 				PreConfig: func() {
 					fake.mutate(func(f *fakePDNS) { delete(f.zones["example.test"].metadata, metadataTSIGAllowDNSUpdate) })
 				},
-				Config: config("", false),
+				Config: config("lock_dnsupdate = true", false),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction("pdns_zone.z", plancheck.ResourceActionUpdate)},
 				},
@@ -329,18 +329,21 @@ resource "pdns_zone_tsig_key" "a" {
 	})
 }
 
-func TestZoneResourceCreateUnlocked(t *testing.T) {
+func TestZoneResourceLockDNSUpdateDefaultsToFalse(t *testing.T) {
 	t.Parallel()
 	fake := newFakePDNS(t)
 
+	// Servers with dnsupdate-require-tsig do not need the lock, so it is opt-in.
 	resource.UnitTest(t, resource.TestCase{
 		ProtoV6ProviderFactories: testProviderFactories,
 		Steps: []resource.TestStep{{
 			Config: zoneConfig(fake, `
-  lock_dnsupdate = false
-  nameservers    = [{ hostname = "ns1" }]
-  soa            = { rname = "hostmaster" }`),
-			Check: checkDNSUpdateList(fake, "example.test."),
+  nameservers = [{ hostname = "ns1" }]
+  soa         = { rname = "hostmaster" }`),
+			Check: resource.ComposeAggregateTestCheckFunc(
+				resource.TestCheckResourceAttr("pdns_zone.z", "lock_dnsupdate", "false"),
+				checkDNSUpdateList(fake, "example.test."),
+			),
 		}},
 	})
 }
@@ -379,7 +382,8 @@ func TestZoneResourceCreateIsNeverUnlocked(t *testing.T) {
 				ProtoV6ProviderFactories: testProviderFactories,
 				Steps: []resource.TestStep{{
 					Config: zoneConfig(fake, `
-  kind        = "`+kind+`"
+  kind           = "`+kind+`"
+  lock_dnsupdate = true
   nameservers = [{ hostname = "ns1", address = "10.0.0.1" }]
   soa         = { rname = "hostmaster" }`),
 					Check: resource.ComposeAggregateTestCheckFunc(
@@ -413,7 +417,7 @@ func TestZoneResourceCreateDirect(t *testing.T) {
 		// Not locked: no detour through Slave.
 		"unlocked": {`lock_dnsupdate = false`, []string{"Native"}, nil},
 		// Secondary zones never apply updates: created directly, then locked.
-		"secondary": {`kind = "Slave"`, []string{"Slave"}, []string{dnsupdateLockKey}},
+		"secondary": {"kind = \"Slave\"\nlock_dnsupdate = true", []string{"Slave"}, []string{dnsupdateLockKey}},
 	}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -468,8 +472,9 @@ func TestZoneResourceCreateRollsBack(t *testing.T) {
 				ProtoV6ProviderFactories: testProviderFactories,
 				Steps: []resource.TestStep{{
 					Config: zoneConfig(fake, `
-  nameservers = [{ hostname = "ns1" }]
-  soa         = { rname = "hostmaster" }`),
+  lock_dnsupdate = true
+  nameservers    = [{ hostname = "ns1" }]
+  soa            = { rname = "hostmaster" }`),
 					ExpectError: regexp.MustCompile(`rejected by test`),
 				}},
 				// The half-created zone is removed again.

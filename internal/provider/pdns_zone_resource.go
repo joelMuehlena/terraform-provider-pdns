@@ -112,7 +112,9 @@ var IP_REGEX = regexp.MustCompile(`^((([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25
 
 func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
-		MarkdownDescription: "Manages a PowerDNS DNS zone, including its SOA and nameserver (NS) records.",
+		MarkdownDescription: "Manages a PowerDNS DNS zone, including its SOA and nameserver (NS) records.\n\n" +
+			"**Dynamic updates:** unless the server runs with `dnsupdate-require-tsig=yes` (PowerDNS 5.0+), a zone without dnsupdate keys " +
+			"accepts unsigned updates from `allow-dnsupdate-from`. Set that option, or `lock_dnsupdate = true` on older servers.",
 		Attributes: map[string]schema.Attribute{
 			"name": schema.StringAttribute{
 				MarkdownDescription: "The Name of the zone to be created. Must end with a dot",
@@ -168,15 +170,19 @@ func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				},
 			},
 			"lock_dnsupdate": schema.BoolAttribute{
-				MarkdownDescription: "Refuse unsigned RFC2136 dynamic updates for this zone. PowerDNS only requires a signature while the zone's " +
-					"`TSIG-ALLOW-DNSUPDATE` metadata lists a key; while it is empty, unsigned updates from addresses permitted by " +
+				MarkdownDescription: "Refuse unsigned RFC2136 dynamic updates for this zone, for servers without `dnsupdate-require-tsig`. " +
+					"By default PowerDNS only requires a signature while the zone's `TSIG-ALLOW-DNSUPDATE` metadata lists a key; while it is " +
+					"empty (a new zone, or after the last dnsupdate key was removed), unsigned updates from addresses permitted by " +
 					"`allow-dnsupdate-from` are accepted. With `true`, the provider keeps the placeholder `" + dnsupdateLockKey + "` in that list, " +
 					"so only updates signed by keys attached with `pdns_zone_tsig_key` (`dnsupdate = true`) are accepted, and none while no key " +
-					"is attached. New zones are created as `Slave` (which does not apply updates), locked and only then switched to their " +
-					"`kind`, so they never accept unlocked updates. Set to `false` to remove the placeholder. Defaults to `true`.",
+					"is attached. New zones are then created as `Slave` (which does not apply updates), locked and only then switched to their " +
+					"`kind`, so they never accept unlocked updates. Setting it to `false` removes the placeholder.\n\n" +
+					"On PowerDNS 5.0 and later, prefer the server setting `dnsupdate-require-tsig=yes`: it refuses every update that is not " +
+					"signed by a key listed for the zone, for all zones and from the moment they exist, so this lock is not needed. " +
+					"Use the lock on 4.9 (which does not have the setting) or where the server configuration cannot be changed. Defaults to `false`.",
 				Optional: true,
 				Computed: true,
-				Default:  booldefault.StaticBool(true),
+				Default:  booldefault.StaticBool(false),
 			},
 			"masters": schema.ListAttribute{
 				MarkdownDescription: "Masters of this zone should only be set if kind is Slave",
