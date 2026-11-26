@@ -2,6 +2,8 @@ package provider
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"regexp"
 	"testing"
@@ -140,4 +142,105 @@ resource "pdns_tsig_key" "k" {
 			ExpectError: regexp.MustCompile(`Authorization Error`),
 		}},
 	})
+}
+
+func TestNewHTTPClient(t *testing.T) {
+	t.Parallel()
+
+	for _, skip := range []bool{false, true} {
+		client := newHTTPClient(skip, 42*time.Second)
+		if client.Timeout != 42*time.Second {
+			t.Errorf("timeout = %s, want 42s", client.Timeout)
+		}
+		transport, ok := client.Transport.(*http.Transport)
+		if !ok {
+			t.Fatalf("transport is %T", client.Transport)
+		}
+		if transport == http.DefaultTransport {
+			t.Error("transport must be a clone, not http.DefaultTransport itself")
+		}
+		// Settings of http.DefaultTransport that a bare &http.Transport{} lacks.
+		if transport.Proxy == nil {
+			t.Error("transport ignores HTTP(S)_PROXY: Proxy is nil")
+		}
+		if transport.DialContext == nil || transport.TLSHandshakeTimeout == 0 || transport.IdleConnTimeout == 0 {
+			t.Error("transport lacks the dial, TLS handshake or idle timeouts of http.DefaultTransport")
+		}
+		if transport.TLSClientConfig == nil || transport.TLSClientConfig.InsecureSkipVerify != skip {
+			t.Errorf("TLS config = %+v, want InsecureSkipVerify %v", transport.TLSClientConfig, skip)
+		}
+	}
+}
+
+func TestParseTimeout(t *testing.T) {
+	t.Parallel()
+
+	for in, want := range map[string]time.Duration{"30s": 30 * time.Second, "1m30s": 90 * time.Second, "250ms": 250 * time.Millisecond, "0s": 0, "0": 0} {
+		if got, err := parseTimeout(in); err != nil || got != want {
+			t.Errorf("parseTimeout(%q) = %s, %v, want %s", in, got, err, want)
+		}
+	}
+	for _, in := range []string{"", "30", "soon", "-1s"} {
+		if _, err := parseTimeout(in); err == nil {
+			t.Errorf("parseTimeout(%q) succeeded, want error", in)
+		}
+	}
+}
+
+func timeoutProviderConfig(endpoint, timeout string) string {
+	return `
+provider "pdns" {
+  endpoint = "` + endpoint + `"
+  api_key  = "` + fakeAPIKey + `"
+  timeout  = "` + timeout + `"
+}
+
+resource "pdns_tsig_key" "k" {
+  name = "k"
+  key  = "YWFhYQ=="
+}
+`
+}
+
+func TestProviderTimeout(t *testing.T) {
+	t.Parallel()
+
+	// A server that does not answer in time.
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(10 * time.Second):
+		}
+	}))
+	t.Cleanup(slow.Close)
+
+	start := time.Now()
+	tfresource.UnitTest(t, tfresource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []tfresource.TestStep{{
+			Config:      timeoutProviderConfig(slow.URL, "200ms"),
+			ExpectError: regexp.MustCompile(`Client.Timeout exceeded`),
+		}},
+	})
+	if elapsed := time.Since(start); elapsed > 8*time.Second {
+		t.Errorf("the request was not cut off by the timeout: took %s", elapsed)
+	}
+}
+
+func TestProviderInvalidTimeout(t *testing.T) {
+	t.Parallel()
+	fake := newFakePDNS(t)
+
+	for _, timeout := range []string{"soon", "30", "-1s"} {
+		t.Run(timeout, func(t *testing.T) {
+			t.Parallel()
+			tfresource.UnitTest(t, tfresource.TestCase{
+				ProtoV6ProviderFactories: testProviderFactories,
+				Steps: []tfresource.TestStep{{
+					Config:      timeoutProviderConfig(fake.srv.URL, timeout),
+					ExpectError: regexp.MustCompile(`Invalid duration`),
+				}},
+			})
+		})
+	}
 }
