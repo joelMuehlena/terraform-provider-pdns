@@ -264,6 +264,7 @@ func (f *fakePDNS) patchZone(w http.ResponseWriter, r *http.Request, zone *fakeZ
 	}
 
 	for _, change := range in.Rrsets {
+		change = fakeStoreRrset(change)
 		zone.rrsets = slices.DeleteFunc(zone.rrsets, func(rr pdns_client.Rrset) bool {
 			return rr.Name == change.Name && rr.Type == change.Type
 		})

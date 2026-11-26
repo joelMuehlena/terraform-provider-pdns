@@ -86,9 +86,11 @@ func (r *RecordResource) Schema(ctx context.Context, req resource.SchemaRequest,
 				Optional:            true,
 			},
 			"records": schema.ListAttribute{
-				ElementType:         types.StringType,
-				Required:            true,
-				MarkdownDescription: "RValue to which the record points. For A type records this are IP Addresses. For CNAMEs this are other FQDNs and so on.",
+				ElementType: types.StringType,
+				Required:    true,
+				MarkdownDescription: "RValue to which the record points. For A type records this are IP Addresses. For CNAMEs this are other FQDNs and so on. " +
+					"The order is not significant: PowerDNS returns the records sorted and in its canonical form (e.g. AAAA addresses compressed and lowercase), " +
+					"and the configured values are kept as long as the server holds the same records.",
 				Validators: []validator.List{
 					listvalidator.SizeAtLeast(1),
 					listvalidator.UniqueValues(),
@@ -219,9 +221,16 @@ func (r *RecordResource) Read(ctx context.Context, req resource.ReadRequest, res
 		data.Comments = listValue
 	}
 
-	listValue, diags = types.ListValueFrom(ctx, types.StringType, lo.Map(rrset.Records, func(item pdns_client.Record, index int) attr.Value {
-		return types.StringValue(item.Content)
-	}))
+	var prior []string
+	if !data.Records.IsNull() && !data.Records.IsUnknown() {
+		resp.Diagnostics.Append(data.Records.ElementsAs(ctx, &prior, false)...)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+	server := lo.Map(rrset.Records, func(item pdns_client.Record, _ int) string { return item.Content })
+
+	listValue, diags = types.ListValueFrom(ctx, types.StringType, reconcileRecords(rrset.Type, prior, server))
 	if diags.HasError() {
 		resp.Diagnostics = append(resp.Diagnostics, diags...)
 		return

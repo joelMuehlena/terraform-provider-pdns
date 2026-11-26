@@ -47,7 +47,7 @@ resource "pdns_record" "test_aaaa" {
 
   type = "AAAA"
   records = [
-    "2345:0425:2CA1:0000:0000:0567:5673:23b5",
+    "2345:425:2ca1::567:5673:23b5",
   ]
 }
 
@@ -69,7 +69,7 @@ resource "pdns_record" "test2_a" {
 ### Required
 
 - `name` (String) LValue of the record (name). This value will be added as prefix to the name. Supports chaining by dot e.g. `sub.test` is a valid value.
-- `records` (List of String) RValue to which the record points. For A type records this are IP Addresses. For CNAMEs this are other FQDNs and so on.
+- `records` (List of String) RValue to which the record points. For A type records this are IP Addresses. For CNAMEs this are other FQDNs and so on. The order is not significant: PowerDNS returns the records sorted and in its canonical form (e.g. AAAA addresses compressed and lowercase), and the configured values are kept as long as the server holds the same records.
 - `type` (String) Type of the record e.g. A, AAAA or CNAME
 - `zone` (String) ID of the zone in which the record should be created. The name must end with a dot `.`.
 
