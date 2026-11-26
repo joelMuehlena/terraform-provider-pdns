@@ -483,3 +483,47 @@ func TestZoneResourceCreateRollsBack(t *testing.T) {
 		})
 	}
 }
+
+func TestZoneResourceDeletedOutOfBand(t *testing.T) {
+	t.Parallel()
+	fake := newFakePDNS(t)
+	config := zoneConfig(fake, `
+  nameservers = [{ hostname = "ns1" }]
+  soa         = { rname = "hostmaster" }`) + `
+resource "pdns_record" "www" {
+  zone    = pdns_zone.z.name
+  name    = "www"
+  type    = "A"
+  records = ["10.0.0.1"]
+}
+`
+	deleteZone := func() { fake.mutate(func(f *fakePDNS) { delete(f.zones, "example.test") }) }
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: config},
+			{
+				// Refresh removes zone and record from state; apply re-creates both.
+				PreConfig: deleteZone,
+				Config:    config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction("pdns_zone.z", plancheck.ResourceActionCreate),
+						plancheck.ExpectResourceAction("pdns_record.www", plancheck.ResourceActionCreate),
+					},
+				},
+				Check: checkRRsets(fake, "example.test.",
+					"SOA example.test. ns1.example.test. hostmaster.example.test. SERIAL 86400 7200 4000000 11200",
+					"A www.example.test. 10.0.0.1",
+				),
+			},
+			{
+				// Destroy succeeds although the zone is already gone.
+				PreConfig: deleteZone,
+				Config:    fake.providerConfig(),
+				Destroy:   true,
+			},
+		},
+	})
+}
