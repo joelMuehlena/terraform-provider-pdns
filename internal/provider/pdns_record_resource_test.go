@@ -105,6 +105,24 @@ func TestRecordResource(t *testing.T) {
 				},
 				Check: checkFakeRRset(fake, "www.example.test.", "A", 60, []string{"10.0.0.3"}, []string{"managed by terraform"}),
 			},
+			{
+				// Deleted out of band: removed from state and re-created.
+				PreConfig: func() {
+					fake.mutate(func(f *fakePDNS) {
+						z := f.zones["example.test"]
+						z.rrsets = slices.DeleteFunc(z.rrsets, func(rr pdns_client.Rrset) bool { return rr.Type == "A" })
+					})
+				},
+				Config: recordConfig(fake, `
+  type     = "A"
+  ttl      = 60
+  records  = ["10.0.0.3"]
+  comments = ["managed by terraform"]`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction("pdns_record.r", plancheck.ResourceActionCreate)},
+				},
+				Check: checkFakeRRset(fake, "www.example.test.", "A", 60, []string{"10.0.0.3"}, []string{"managed by terraform"}),
+			},
 		},
 	})
 }
