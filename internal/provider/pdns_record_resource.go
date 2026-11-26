@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
@@ -178,6 +179,14 @@ func (r *RecordResource) Read(ctx context.Context, req resource.ReadRequest, res
 
 	expandedName := fqdn(data.Name.ValueString(), data.Zone.ValueString())
 	zone, err := r.providerData.pdnsClient.GetZone(ctx, data.Zone.ValueString(), true, expandedName)
+	if isNotFound(err) {
+		resp.Diagnostics.AddWarning(
+			"Zone not found",
+			fmt.Sprintf("The zone %q of record %q no longer exists on the PowerDNS server, so the record was removed from state.", data.Zone.ValueString(), expandedName),
+		)
+		resp.State.RemoveResource(ctx)
+		return
+	}
 	if handleClientError(&resp.Diagnostics, err) {
 		return
 	}
@@ -291,6 +300,10 @@ func (r *RecordResource) Delete(ctx context.Context, req resource.DeleteRequest,
 		Changetype: "DELETE",
 		Name:       fqdn(data.Name.ValueString(), data.Zone.ValueString()),
 	}})
+	if isNotFound(err) {
+		// The zone is gone, and with it the record.
+		return
+	}
 	handleClientError(&resp.Diagnostics, err)
 }
 
