@@ -949,3 +949,31 @@ func TestZoneResourceCreateWithDNSSEC(t *testing.T) {
 		})
 	}
 }
+
+func TestZoneResourceUpdateWithoutSOARecord(t *testing.T) {
+	t.Parallel()
+	fake := newFakePDNS(t)
+	defaultSOA := "SOA example.test. a.misconfigured.dns.server.invalid. hostmaster.example.test. SERIAL 10800 3600 604800 3600"
+	config := func(nameserver, soa string) string {
+		return zoneConfig(fake, `
+  nameservers = [{ hostname = "`+nameserver+`" }]
+  soa         = { create_record = false, `+soa+` }`)
+	}
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: config("ns1", `rname = "hostmaster"`), Check: checkRRsets(fake, "example.test.", defaultSOA)},
+			{
+				// The provider does not manage the SOA record: changing soa
+				// or the first nameserver leaves it alone.
+				Config: config("ns1", `rname = "admin", refresh = 3600`),
+				Check:  checkRRsets(fake, "example.test.", defaultSOA),
+			},
+			{
+				Config: config("ns2", `rname = "admin", refresh = 3600`),
+				Check:  checkRRsets(fake, "example.test.", defaultSOA),
+			},
+		},
+	})
+}

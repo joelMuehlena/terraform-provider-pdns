@@ -597,7 +597,15 @@ func (r *ZoneResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	// when records are rewritten below; otherwise keep the current one.
 	plan.Serial = state.Serial
 
-	if !state.Nameservers.Equal(plan.Nameservers) || !state.SOA.Equal(plan.SOA) {
+	var newSoaData SOA
+	resp.Diagnostics.Append(plan.SOA.As(ctx, &newSoaData, basetypes.ObjectAsOptions{})...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	// With create_record = false the SOA record is not managed by the provider.
+	soaChanged := newSoaData.CreateRecord && !state.SOA.Equal(plan.SOA)
+
+	if !state.Nameservers.Equal(plan.Nameservers) || soaChanged {
 		records := make([]pdns_client.Rrset, 0)
 
 		serial, err := IncreaseSOASerial(state.Serial.ValueString())
@@ -637,14 +645,7 @@ func (r *ZoneResource) Update(ctx context.Context, req resource.UpdateRequest, r
 			}),
 		})
 
-		if !state.SOA.Equal(plan.SOA) || (len(plan.Nameservers.Elements()) >= 1 && len(state.Nameservers.Elements()) == 0) || !state.Nameservers.Elements()[0].Equal(plan.Nameservers.Elements()[0]) {
-			var newSoaData SOA
-			diags = plan.SOA.As(ctx, &newSoaData, basetypes.ObjectAsOptions{})
-			if diags.HasError() {
-				resp.Diagnostics = append(resp.Diagnostics, diags...)
-				return
-			}
-
+		if newSoaData.CreateRecord && (soaChanged || (len(plan.Nameservers.Elements()) >= 1 && len(state.Nameservers.Elements()) == 0) || !state.Nameservers.Elements()[0].Equal(plan.Nameservers.Elements()[0])) {
 			soaRecord := soaRrset(newSoaData, fqdn(newNameservers[0].Hostname, plan.Name.ValueString()), plan.Name.ValueString(), serial)
 			soaRecord.Changetype = "REPLACE"
 			records = append(records, soaRecord)
