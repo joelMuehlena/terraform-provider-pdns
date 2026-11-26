@@ -751,3 +751,34 @@ resource "pdns_record" "www" {
 		},
 	})
 }
+
+func TestZoneResourceCreateWithDNSSEC(t *testing.T) {
+	t.Parallel()
+
+	for _, lock := range []string{"false", "true"} {
+		t.Run("lock_dnsupdate="+lock, func(t *testing.T) {
+			t.Parallel()
+			fake := newFakePDNS(t)
+
+			resource.UnitTest(t, resource.TestCase{
+				ProtoV6ProviderFactories: testProviderFactories,
+				Steps: []resource.TestStep{{
+					Config: zoneConfig(fake, `
+  dnssec         = true
+  lock_dnsupdate = `+lock+`
+  nameservers    = [{ hostname = "ns1" }]
+  soa            = { rname = "hostmaster" }`),
+					Check: resource.ComposeAggregateTestCheckFunc(
+						resource.TestCheckResourceAttr("pdns_zone.z", "dnssec", "true"),
+						func(*terraform.State) error {
+							if zone, _ := fake.zone("example.test."); zone.kind != "Native" || !zone.dnssec {
+								return fmt.Errorf("zone kind=%s dnssec=%v, want Native and signed", zone.kind, zone.dnssec)
+							}
+							return nil
+						},
+					),
+				}},
+			})
+		})
+	}
+}
