@@ -234,3 +234,112 @@ func TestZoneResourceErrors(t *testing.T) {
 		})
 	}
 }
+
+// checkDNSUpdateList asserts the zone's TSIG-ALLOW-DNSUPDATE on the fake
+// server, ignoring order and spelling.
+func checkDNSUpdateList(fake *fakePDNS, zoneName string, want ...string) resource.TestCheckFunc {
+	return func(*terraform.State) error {
+		zone, ok := fake.zone(zoneName)
+		if !ok {
+			return fmt.Errorf("zone %s does not exist", zoneName)
+		}
+		if got, want := normalizedNames(zone.metadata[metadataTSIGAllowDNSUpdate]), normalizedNames(want); !slices.Equal(got, want) {
+			return fmt.Errorf("zone %s dnsupdate list = %v, want %v", zoneName, got, want)
+		}
+		return nil
+	}
+}
+
+func TestZoneResourceDNSUpdateLock(t *testing.T) {
+	t.Parallel()
+	fake := newFakePDNS(t)
+
+	config := func(lock string, attached bool) string {
+		c := zoneConfig(fake, lock+`
+  nameservers = [{ hostname = "ns1" }]
+  soa         = { rname = "hostmaster" }`) + `
+resource "pdns_tsig_key" "a" {
+  name = "tenant-a"
+  key  = "` + secretA + `"
+}
+`
+		if attached {
+			c += `
+resource "pdns_zone_tsig_key" "a" {
+  zone        = pdns_zone.z.name
+  tsig_key_id = pdns_tsig_key.a.id
+  dnsupdate   = true
+}
+`
+		}
+		return c
+	}
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				// Locked by default, before any key is attached.
+				Config: config("", false),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("pdns_zone.z", "lock_dnsupdate", "true"),
+					checkDNSUpdateList(fake, "example.test.", dnsupdateLockKey),
+				),
+			},
+			{
+				// Attached keys are listed next to the placeholder.
+				Config: config("", true),
+				Check:  checkDNSUpdateList(fake, "example.test.", dnsupdateLockKey, "tenant-a"),
+			},
+			{
+				// Removing the last key keeps the zone locked.
+				Config: config("", false),
+				Check:  checkDNSUpdateList(fake, "example.test.", dnsupdateLockKey),
+			},
+			{
+				// Placeholder removed out of band: drift, restored in place.
+				PreConfig: func() {
+					fake.mutate(func(f *fakePDNS) { delete(f.zones["example.test"].metadata, metadataTSIGAllowDNSUpdate) })
+				},
+				Config: config("", false),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction("pdns_zone.z", plancheck.ResourceActionUpdate)},
+				},
+				Check: checkDNSUpdateList(fake, "example.test.", dnsupdateLockKey),
+			},
+			{
+				// Opting out removes only the placeholder.
+				Config: config("lock_dnsupdate = false", true),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("pdns_zone.z", "lock_dnsupdate", "false"),
+					checkDNSUpdateList(fake, "example.test.", "tenant-a"),
+				),
+			},
+			{
+				Config: config("lock_dnsupdate = false", false),
+				Check:  checkDNSUpdateList(fake, "example.test."),
+			},
+			{
+				// Locking again.
+				Config: config("lock_dnsupdate = true", true),
+				Check:  checkDNSUpdateList(fake, "example.test.", dnsupdateLockKey, "tenant-a"),
+			},
+		},
+	})
+}
+
+func TestZoneResourceCreateUnlocked(t *testing.T) {
+	t.Parallel()
+	fake := newFakePDNS(t)
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []resource.TestStep{{
+			Config: zoneConfig(fake, `
+  lock_dnsupdate = false
+  nameservers    = [{ hostname = "ns1" }]
+  soa            = { rname = "hostmaster" }`),
+			Check: checkDNSUpdateList(fake, "example.test."),
+		}},
+	})
+}

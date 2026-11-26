@@ -241,3 +241,27 @@ func TestTSIGKeyResourceServerError(t *testing.T) {
 		}},
 	})
 }
+
+func TestTSIGKeyNameRejectsLockPlaceholder(t *testing.T) {
+	t.Parallel()
+	fake := newFakePDNS(t)
+
+	for _, name := range []string{dnsupdateLockKey, "PDNS-provider-dnsupdate-locked"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			resource.UnitTest(t, resource.TestCase{
+				ProtoV6ProviderFactories: testProviderFactories,
+				Steps: []resource.TestStep{{
+					Config: fake.providerConfig() + `
+resource "pdns_tsig_key" "k" {
+  name = "` + name + `"
+  key  = "` + secretA + `"
+}
+`,
+					PlanOnly:    true,
+					ExpectError: regexp.MustCompile(`Invalid Attribute Value Match`),
+				}},
+			})
+		})
+	}
+}

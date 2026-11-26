@@ -79,6 +79,8 @@ func (r *TSIGKeyResource) Schema(ctx context.Context, req resource.SchemaRequest
 				},
 				Validators: []validator.String{
 					stringvalidator.LengthAtLeast(1),
+					// Reserved: pdns_zone_tsig_key lists it to disable dynamic updates.
+					stringvalidator.NoneOfCaseInsensitive(dnsupdateLockKey, strings.TrimSuffix(dnsupdateLockKey, ".")),
 				},
 			},
 			"algorithm": schema.StringAttribute{
