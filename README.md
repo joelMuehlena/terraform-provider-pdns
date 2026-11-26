@@ -5,7 +5,7 @@ zones, records and TSIG keys — through its HTTP API using Terraform or OpenTof
 
 ## Requirements
 
-- Terraform >= 1.0 or OpenTofu >= 1.6
+- Terraform or OpenTofu; see the [support matrix](#support-matrix) for the tested versions.
 - A reachable PowerDNS Authoritative Server with the [HTTP API](https://doc.powerdns.com/authoritative/http-api/index.html) enabled and an API key
 
 ## Support matrix
@@ -116,7 +116,7 @@ The acceptance tests (`internal/provider/*_acc_test.go`, `TestAcc*`) run the
 resources against a real PowerDNS Authoritative server. They are skipped
 unless `TF_ACC=1`, `PDNS_ACC_ENDPOINT` and `PDNS_ACC_API_KEY` are set;
 `PDNS_ACC_DNS_ADDR` (host:port of the DNS listener) additionally enables the
-signed RFC2136 update test.
+RFC2136 update tests.
 
 `test/acc/run.sh` starts a server with docker compose, runs the tests and
 tears the server down:

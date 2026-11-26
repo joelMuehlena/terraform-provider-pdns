@@ -115,9 +115,9 @@ resource "pdns_zone_tsig_key" "other" {
 	})
 }
 
-// TestAccZoneDNSUpdateLock verifies end to end that a pdns_zone with the
-// default lock_dnsupdate = true refuses unsigned updates whether or not keys
-// are attached, and that lock_dnsupdate = false re-allows them.
+// TestAccZoneDNSUpdateLock verifies end to end that a pdns_zone with
+// lock_dnsupdate = true refuses unsigned updates whether or not keys are
+// attached, and that switching it back to false (the default) re-allows them.
 func TestAccZoneDNSUpdateLock(t *testing.T) {
 	env := testAccPreCheck(t)
 	env.dnsAddr = os.Getenv("PDNS_ACC_DNS_ADDR")
