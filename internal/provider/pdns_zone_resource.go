@@ -432,6 +432,10 @@ func (r *ZoneResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		return
 	}
 
+	// The serial is computed and therefore unknown in the plan. It only changes
+	// when records are rewritten below; otherwise keep the current one.
+	plan.Serial = state.Serial
+
 	if !state.Nameservers.Equal(plan.Nameservers) || !state.SOA.Equal(plan.SOA) {
 		records := make([]pdns_client.Rrset, 0)
 
