@@ -146,6 +146,25 @@ func TestZoneResource(t *testing.T) {
 					return nil
 				},
 			},
+			{
+				// And back: dnssec = false must be sent explicitly.
+				Config: zoneConfig(fake, `
+  nameservers = [
+    { hostname = "ns1", address = "10.0.0.9" },
+    { hostname = "ns3", address = "10.0.0.3" },
+  ]
+  soa = {
+    rname   = "admin"
+    refresh = 3600
+  }`),
+				Check: func(*terraform.State) error {
+					zone, _ := fake.zone("example.test.")
+					if zone.kind != "Native" || zone.dnssec {
+						return fmt.Errorf("zone kind=%s dnssec=%v", zone.kind, zone.dnssec)
+					}
+					return nil
+				},
+			},
 		},
 	})
 }
