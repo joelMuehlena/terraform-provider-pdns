@@ -740,6 +740,45 @@ func TestZoneResourceCreateIsNeverUnlocked(t *testing.T) {
 	}
 }
 
+func TestZoneResourceUpdateKindAndLockIsNeverUnlocked(t *testing.T) {
+	t.Parallel()
+	fake := newFakePDNS(t)
+	kinds := assertNeverUnlocked(t, fake, "example.test.")
+	config := func(kind, lock string) string {
+		return zoneConfig(fake, `
+  kind           = "`+kind+`"
+  lock_dnsupdate = `+lock+`
+  nameservers    = [{ hostname = "ns1" }]
+  soa            = { rname = "hostmaster" }`)
+	}
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: config("Slave", "false")},
+			{
+				// One change to a kind that applies updates, with lock: the
+				// lock is set before the kind switch.
+				Config: config("Native", "true"),
+				Check:  checkDNSUpdateList(fake, "example.test.", dnsupdateLockKey),
+			},
+			{
+				// And back: the lock is removed after the switch to Slave.
+				Config: config("Slave", "false"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					checkDNSUpdateList(fake, "example.test."),
+					func(*terraform.State) error {
+						if want := []string{"Slave", "Native", "Slave"}; !slices.Equal(*kinds, want) {
+							return fmt.Errorf("zone kinds = %v, want %v", *kinds, want)
+						}
+						return nil
+					},
+				),
+			},
+		},
+	})
+}
+
 func TestZoneResourceCreateDirect(t *testing.T) {
 	t.Parallel()
 

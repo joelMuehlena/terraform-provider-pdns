@@ -670,10 +670,20 @@ func (r *ZoneResource) Update(ctx context.Context, req resource.UpdateRequest, r
 }
 
 // updateSettings applies changes of the zone settings: masters, kind, DNSSEC
-// and the dnsupdate lock.
+// and the dnsupdate lock. A lock that is added is set before, and a lock that
+// is removed after the other changes, so a zone that switches from a
+// secondary kind to one applying updates never does so unlocked.
 func (r *ZoneResource) updateSettings(ctx context.Context, plan, state ZoneResourceModel) error {
 	client := r.providerData.pdnsClient
 	name := plan.Name.ValueString()
+	lockChanged := !state.LockDNSUpdate.Equal(plan.LockDNSUpdate)
+	lock := plan.LockDNSUpdate.ValueBool()
+
+	if lockChanged && lock {
+		if err := r.providerData.setDNSUpdateLock(ctx, name, true); err != nil {
+			return err
+		}
+	}
 
 	// The primaries are set before the kind switch, so a zone that becomes a
 	// Slave transfers from the right servers; a zone that stops being one is
@@ -695,8 +705,8 @@ func (r *ZoneResource) updateSettings(ctx context.Context, plan, state ZoneResou
 		}
 	}
 
-	if !state.LockDNSUpdate.Equal(plan.LockDNSUpdate) {
-		return r.providerData.setDNSUpdateLock(ctx, name, plan.LockDNSUpdate.ValueBool())
+	if lockChanged && !lock {
+		return r.providerData.setDNSUpdateLock(ctx, name, false)
 	}
 	return nil
 }
