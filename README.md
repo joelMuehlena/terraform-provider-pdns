@@ -66,6 +66,7 @@ resource "pdns_record" "www" {
 | `pdns_zone`     | A zone including its SOA and NS records.                                                      |
 | `pdns_record`   | A single rrset within a zone.                                                                 |
 | `pdns_tsig_key` | A TSIG key. The secret is set via `key` or the write-only `key_wo` (Terraform/OpenTofu >= 1.11). |
+| `pdns_zone_tsig_key` | Attaches a TSIG key to a zone for `dnsupdate`, `axfr` and/or `secondary`. Many keys per zone and many zones per key. |
 
 See the [`docs/`](./docs) directory for the full resource reference.
 
