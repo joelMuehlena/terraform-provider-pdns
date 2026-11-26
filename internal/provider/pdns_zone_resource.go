@@ -52,6 +52,8 @@ type ZoneResourceModel struct {
 	Kind        types.String `tfsdk:"kind"`
 	SOA         types.Object `tfsdk:"soa"`
 	DNSSec      types.Bool   `tfsdk:"dnssec"`
+	// LockDNSUpdate keeps the dnsupdate lock placeholder in the zone.
+	LockDNSUpdate types.Bool `tfsdk:"lock_dnsupdate"`
 }
 
 type Nameserver struct {
@@ -165,6 +167,16 @@ func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 					stringvalidator.OneOf("Native", "Master", "Slave", "Producer", "Consumer"),
 				},
 			},
+			"lock_dnsupdate": schema.BoolAttribute{
+				MarkdownDescription: "Refuse unsigned RFC2136 dynamic updates for this zone. PowerDNS only requires a signature while the zone's " +
+					"`TSIG-ALLOW-DNSUPDATE` metadata lists a key; while it is empty, unsigned updates from addresses permitted by " +
+					"`allow-dnsupdate-from` are accepted. With `true`, the provider keeps the placeholder `" + dnsupdateLockKey + "` in that list, " +
+					"so only updates signed by keys attached with `pdns_zone_tsig_key` (`dnsupdate = true`) are accepted, and none while no key " +
+					"is attached. Set to `false` to remove the placeholder. Defaults to `true`.",
+				Optional: true,
+				Computed: true,
+				Default:  booldefault.StaticBool(true),
+			},
 			"masters": schema.ListAttribute{
 				MarkdownDescription: "Masters of this zone should only be set if kind is Slave",
 				Optional:            true,
@@ -269,6 +281,12 @@ func (r *ZoneResource) Create(ctx context.Context, req resource.CreateRequest, r
 	zone, err = r.providerData.pdnsClient.CreateZone(ctx, newZone)
 	if handleClientError(&resp.Diagnostics, err) {
 		return
+	}
+
+	if data.LockDNSUpdate.ValueBool() {
+		if handleClientError(&resp.Diagnostics, r.providerData.setDNSUpdateLock(ctx, data.Name.ValueString(), true)) {
+			return
+		}
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -422,6 +440,12 @@ func (r *ZoneResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	}
 
 	data.Nameservers = listValue
+
+	locked, err := r.providerData.hasDNSUpdateLock(ctx, zone.Name)
+	if handleClientError(&resp.Diagnostics, err) {
+		return
+	}
+	data.LockDNSUpdate = types.BoolValue(locked)
 	// Save updated data into Terraform state
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -513,6 +537,12 @@ func (r *ZoneResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	if !state.DNSSec.Equal(plan.DNSSec) || !state.Kind.Equal(plan.Kind) {
 		err := r.providerData.pdnsClient.UpdateZoneSettings(ctx, plan.Name.ValueString(), plan.Kind.ValueString(), plan.DNSSec.ValueBool())
 		if handleClientError(&resp.Diagnostics, err) {
+			return
+		}
+	}
+
+	if !state.LockDNSUpdate.Equal(plan.LockDNSUpdate) {
+		if handleClientError(&resp.Diagnostics, r.providerData.setDNSUpdateLock(ctx, plan.Name.ValueString(), plan.LockDNSUpdate.ValueBool())) {
 			return
 		}
 	}

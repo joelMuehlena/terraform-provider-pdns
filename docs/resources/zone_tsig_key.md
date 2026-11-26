@@ -63,7 +63,7 @@ resource "pdns_zone_tsig_key" "tenant_b_example_com" {
 ### Optional
 
 - `axfr` (Boolean) Allow zone transfers (AXFR) of the zone signed with this key (`master_tsig_key_ids` / `TSIG-ALLOW-AXFR`). Defaults to `false`.
-- `dnsupdate` (Boolean) Allow the key to perform RFC2136 dynamic updates on the zone (`TSIG-ALLOW-DNSUPDATE` metadata). Defaults to `false`. PowerDNS only requires a signature while at least one key is allowed: once no key of the zone has `dnsupdate`, updates from addresses permitted by `allow-dnsupdate-from` are accepted unsigned.
+- `dnsupdate` (Boolean) Allow the key to perform RFC2136 dynamic updates on the zone (`TSIG-ALLOW-DNSUPDATE` metadata). Defaults to `false`. PowerDNS only requires a signature while at least one key is allowed: once no key of the zone has `dnsupdate`, updates from addresses permitted by `allow-dnsupdate-from` are accepted unsigned, unless the zone is locked (`lock_dnsupdate` of `pdns_zone`, on by default).
 - `secondary` (Boolean) Use the key when this server transfers the zone from its primary, for `Slave`/secondary zones (`slave_tsig_key_ids` / `AXFR-MASTER-TSIG`). Defaults to `false`. PowerDNS allows only one secondary key per zone.
 
 ### Read-Only

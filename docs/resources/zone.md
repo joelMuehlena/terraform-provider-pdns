@@ -54,6 +54,7 @@ resource "pdns_zone" "example_com" {
 
 - `dnssec` (Boolean) Whether or not this zone is DNSSEC signed
 - `kind` (String) The zone kind. One of `Native`, `Master`, `Slave`, `Producer` or `Consumer`. Defaults to `Native`.
+- `lock_dnsupdate` (Boolean) Refuse unsigned RFC2136 dynamic updates for this zone. PowerDNS only requires a signature while the zone's `TSIG-ALLOW-DNSUPDATE` metadata lists a key; while it is empty, unsigned updates from addresses permitted by `allow-dnsupdate-from` are accepted. With `true`, the provider keeps the placeholder `pdns-provider-dnsupdate-locked.` in that list, so only updates signed by keys attached with `pdns_zone_tsig_key` (`dnsupdate = true`) are accepted, and none while no key is attached. Set to `false` to remove the placeholder. Defaults to `true`.
 - `masters` (List of String) Masters of this zone should only be set if kind is Slave
 
 ### Read-Only
