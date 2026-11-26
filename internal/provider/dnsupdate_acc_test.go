@@ -194,6 +194,48 @@ resource "pdns_zone_tsig_key" "k" {
 	})
 }
 
+// TestAccZoneLockedCreate verifies that a zone created with lock_dnsupdate =
+// true (created as Slave, locked, then switched to its kind) ends up with the
+// same records as an unlocked one, including the A/AAAA glue of its
+// nameservers, and with its configured kind.
+func TestAccZoneLockedCreate(t *testing.T) {
+	env := testAccPreCheck(t)
+	env.dnsAddr = os.Getenv("PDNS_ACC_DNS_ADDR")
+	name := env.zoneName(t, "locked")
+
+	check := resource.ComposeAggregateTestCheckFunc(
+		resource.TestCheckResourceAttr("pdns_zone.z", "kind", "Master"),
+		resource.TestCheckResourceAttr("pdns_zone.z", "lock_dnsupdate", "true"),
+		env.checkZoneSettings(name, "Master", false),
+		env.checkRRsets(name,
+			"SOA "+name+" ns1."+name+" hostmaster."+name+" SERIAL 86400 7200 4000000 11200",
+			"NS "+name+" ns1."+name+",ns2."+name,
+			"A ns1."+name+" 10.0.0.1",
+			"AAAA ns2."+name+" 2001:db8::2",
+		),
+		env.checkDNSUpdateList(name, dnsupdateLockKey),
+	)
+	if env.dnsAddr != "" {
+		check = resource.ComposeAggregateTestCheckFunc(check, env.checkDNSUpdate(name, "", "", "u."+name, false))
+	}
+
+	resource.ParallelTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		CheckDestroy:             env.checkZoneGone(name),
+		Steps: []resource.TestStep{{
+			Config: accZoneConfig(env, name, `
+  kind           = "Master"
+  lock_dnsupdate = true
+  nameservers = [
+    { hostname = "ns1", address = "10.0.0.1" },
+    { hostname = "ns2", address = "2001:db8::2" },
+  ]
+  soa = { rname = "hostmaster" }`),
+			Check: check,
+		}},
+	})
+}
+
 // checkDNSUpdateList asserts the zone's TSIG-ALLOW-DNSUPDATE on the server.
 func (e *accEnv) checkDNSUpdateList(zone string, want ...string) resource.TestCheckFunc {
 	return func(*terraform.State) error {
