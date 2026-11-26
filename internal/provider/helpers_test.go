@@ -334,35 +334,64 @@ func TestNameserverRecordChanges(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	records, diags := nameserverRecordChanges(ctx,
-		[]Nameserver{
-			{Hostname: "ns1", Address: new("10.0.0.1")},
-			{Hostname: "ns2"}, // no address: skipped
-			{Hostname: "ns3.other.org.", Address: new("2001:db8::3")},
+	tests := map[string]struct {
+		planned, current []Nameserver
+		want             []pdns_client.Rrset
+	}{
+		"added and removed": {
+			planned: []Nameserver{
+				{Hostname: "ns1", Address: new("10.0.0.1")},
+				{Hostname: "ns2"}, // no address: skipped
+				{Hostname: "ns3.other.org.", Address: new("2001:db8::3")},
+			},
+			current: []Nameserver{{Hostname: "old", Address: new("10.0.0.9")}},
+			want: []pdns_client.Rrset{
+				{Type: "A", Changetype: "REPLACE", Name: "ns1.example.com.", Records: []pdns_client.Record{{Content: "10.0.0.1"}}},
+				{Type: "AAAA", Changetype: "REPLACE", Name: "ns3.other.org.", Records: []pdns_client.Record{{Content: "2001:db8::3"}}},
+				{Type: "A", Changetype: "DELETE", Name: "old.example.com."},
+			},
 		},
-		[]Nameserver{{Hostname: "old", Address: new("10.0.0.9")}},
-		"example.com.",
-	)
-	if diags.HasError() {
-		t.Fatal(diags)
+		"removed without address": {
+			planned: []Nameserver{{Hostname: "ns1"}},
+			current: []Nameserver{{Hostname: "ns1"}, {Hostname: "ns2"}},
+			want:    []pdns_client.Rrset{},
+		},
+		"address removed": {
+			planned: []Nameserver{{Hostname: "ns1"}},
+			current: []Nameserver{{Hostname: "ns1", Address: new("10.0.0.1")}},
+			want:    []pdns_client.Rrset{{Type: "A", Changetype: "DELETE", Name: "ns1.example.com."}},
+		},
+		"address family changed": {
+			planned: []Nameserver{{Hostname: "ns1", Address: new("2001:db8::1")}},
+			current: []Nameserver{{Hostname: "ns1", Address: new("10.0.0.1")}},
+			want: []pdns_client.Rrset{
+				{Type: "AAAA", Changetype: "REPLACE", Name: "ns1.example.com.", Records: []pdns_client.Record{{Content: "2001:db8::1"}}},
+				{Type: "A", Changetype: "DELETE", Name: "ns1.example.com."},
+			},
+		},
+		"address changed": {
+			planned: []Nameserver{{Hostname: "ns1", Address: new("10.0.0.2")}},
+			current: []Nameserver{{Hostname: "ns1", Address: new("10.0.0.1")}},
+			want:    []pdns_client.Rrset{{Type: "A", Changetype: "REPLACE", Name: "ns1.example.com.", Records: []pdns_client.Record{{Content: "10.0.0.2"}}}},
+		},
+	}
+	for name, tc := range tests {
+		records, diags := nameserverRecordChanges(ctx, tc.planned, tc.current, "example.com.")
+		if diags.HasError() {
+			t.Errorf("%s: %v", name, diags)
+			continue
+		}
+		if fmt.Sprint(records) != fmt.Sprint(tc.want) {
+			t.Errorf("%s: records =\n%+v\nwant\n%+v", name, records, tc.want)
+		}
 	}
 
-	want := []pdns_client.Rrset{
-		{Type: "A", Changetype: "REPLACE", Name: "ns1.example.com.", Records: []pdns_client.Record{{Content: "10.0.0.1"}}},
-		{Type: "AAAA", Changetype: "REPLACE", Name: "ns3.other.org.", Records: []pdns_client.Record{{Content: "2001:db8::3"}}},
-		{Type: "A", Changetype: "DELETE", Name: "old.example.com."},
-	}
-	if fmt.Sprint(records) != fmt.Sprint(want) {
-		t.Errorf("records =\n%+v\nwant\n%+v", records, want)
-	}
-
-	errorCases := map[string]struct{ added, deleted []Nameserver }{
-		"invalid added address":   {added: []Nameserver{{Hostname: "ns1", Address: new("bad")}}},
-		"invalid deleted address": {deleted: []Nameserver{{Hostname: "ns1", Address: new("bad")}}},
-		"deleted without address": {deleted: []Nameserver{{Hostname: "ns1"}}},
+	errorCases := map[string]struct{ planned, current []Nameserver }{
+		"invalid added address":   {planned: []Nameserver{{Hostname: "ns1", Address: new("bad")}}},
+		"invalid deleted address": {current: []Nameserver{{Hostname: "ns1", Address: new("bad")}}},
 	}
 	for name, tc := range errorCases {
-		if _, diags := nameserverRecordChanges(ctx, tc.added, tc.deleted, "example.com."); !diags.HasError() {
+		if _, diags := nameserverRecordChanges(ctx, tc.planned, tc.current, "example.com."); !diags.HasError() {
 			t.Errorf("%s: expected error", name)
 		}
 	}
