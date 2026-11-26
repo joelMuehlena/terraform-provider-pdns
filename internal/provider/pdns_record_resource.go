@@ -72,7 +72,10 @@ func (r *RecordResource) Schema(ctx context.Context, req resource.SchemaRequest,
 			},
 			"type": schema.StringAttribute{
 				Required:            true,
-				MarkdownDescription: "Type of the record e.g. A, AAAA or CNAME",
+				MarkdownDescription: "Type of the record e.g. A, AAAA or CNAME. Changing it replaces the record.",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
 			},
 			"ttl": schema.Int64Attribute{
 				Optional:            true,
