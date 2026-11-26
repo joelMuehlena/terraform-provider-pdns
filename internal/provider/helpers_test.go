@@ -15,6 +15,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 	"github.com/samber/lo"
 	"gitlab.com/joelMuehlena/homelab/code/terraform/provider/terraform-provider-pdns/internal/pdns_client"
 )
@@ -438,6 +439,119 @@ func TestReadAddress(t *testing.T) {
 		if (got == nil) != (tt.want == nil) || (got != nil && *got != *tt.want) {
 			t.Errorf("%s: readAddress = %v, want %v", name, lo.FromPtr(got), lo.FromPtr(tt.want))
 		}
+	}
+}
+
+func TestImportNameservers(t *testing.T) {
+	t.Parallel()
+	zone := pdns_client.PDNSZone{
+		Name: "example.com.",
+		Rrsets: []pdns_client.Rrset{
+			{Type: "NS", Name: "example.com.", Records: []pdns_client.Record{
+				{Content: "ns1.example.com."}, {Content: "ns2.example.com."}, {Content: "ns3.example.com."},
+				{Content: "ns.other.org."}, {Content: "ns.example.com.other.org."},
+			}},
+			{Type: "A", Name: "ns1.example.com.", Records: []pdns_client.Record{{Content: "10.0.0.1"}, {Content: "10.0.0.11"}}},
+			{Type: "AAAA", Name: "ns1.example.com.", Records: []pdns_client.Record{{Content: "2001:db8::1"}}},
+			{Type: "AAAA", Name: "ns2.example.com.", Records: []pdns_client.Record{{Content: "2001:db8::2"}}},
+			{Type: "A", Name: "ns.other.org.", Records: []pdns_client.Record{{Content: "10.0.0.9"}}},
+		},
+	}
+	imported := func(zone pdns_client.PDNSZone) []string {
+		return lo.Map(importNameservers(zone), func(ns Nameserver, _ int) string {
+			return ns.Hostname + "=" + lo.FromPtrOr(ns.Address, "-")
+		})
+	}
+	// Sorted by name: the server's record order depends on the backend.
+	want := []string{"ns.example.com.other.org.=-", "ns.other.org.=-", "ns1=10.0.0.1", "ns2=2001:db8::2", "ns3=-"}
+	if got := imported(zone); !slices.Equal(got, want) {
+		t.Errorf("importNameservers = %v, want %v", got, want)
+	}
+
+	// The primary nameserver of the SOA record comes first.
+	zone.Rrsets = append(zone.Rrsets, pdns_client.Rrset{Type: "SOA", Name: "example.com.", Records: []pdns_client.Record{
+		{Content: "NS3.example.com. hostmaster.example.com. 1 2 3 4 5"},
+	}})
+	want = []string{"ns3=-", "ns.example.com.other.org.=-", "ns.other.org.=-", "ns1=10.0.0.1", "ns2=2001:db8::2"}
+	if got := imported(zone); !slices.Equal(got, want) {
+		t.Errorf("importNameservers with SOA = %v, want %v", got, want)
+	}
+	if got := importNameservers(pdns_client.PDNSZone{Name: "example.com."}); len(got) != 0 {
+		t.Errorf("without NS rrset: %v", got)
+	}
+}
+
+func TestImportNameserversIsDeterministic(t *testing.T) {
+	t.Parallel()
+	// gpgsql returns records in arbitrary order; import must not depend on it.
+	zone := func(order ...string) pdns_client.PDNSZone {
+		ns := pdns_client.Rrset{Name: "example.test.", Type: "NS"}
+		for _, n := range order {
+			ns.Records = append(ns.Records, pdns_client.Record{Content: n})
+		}
+		return pdns_client.PDNSZone{Name: "example.test.", Rrsets: []pdns_client.Rrset{
+			ns,
+			{Name: "example.test.", Type: "SOA", Records: []pdns_client.Record{{Content: "ns2.example.test. hostmaster.example.test. 1 2 3 4 5"}}},
+			{Name: "ns1.example.test.", Type: "A", Records: []pdns_client.Record{{Content: "10.0.0.9"}, {Content: "10.0.0.1"}}},
+		}}
+	}
+	names := func(ns []Nameserver) []string {
+		return lo.Map(ns, func(n Nameserver, _ int) string { return n.Hostname })
+	}
+
+	want := []string{"ns2", "ns1", "ns3.other.org."} // SOA primary first, then sorted
+	for _, order := range [][]string{
+		{"ns1.example.test.", "ns2.example.test.", "ns3.other.org."},
+		{"ns3.other.org.", "ns1.example.test.", "ns2.example.test."},
+		{"ns2.example.test.", "ns3.other.org.", "ns1.example.test."},
+	} {
+		got := importNameservers(zone(order...))
+		if !slices.Equal(names(got), want) {
+			t.Errorf("order %v: nameservers = %v, want %v", order, names(got), want)
+		}
+		if a := got[1].Address; a == nil || *a != "10.0.0.1" {
+			t.Errorf("order %v: ns1 address = %v, want the lowest glue address 10.0.0.1", order, a)
+		}
+	}
+}
+
+func TestReadSOAImport(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	null := types.ObjectNull(SOAModel{}.AttributeTypes())
+	tests := map[string]struct {
+		content string
+		want    SOAModel
+	}{
+		"managed": {"ns1.example.com. admin.example.com. 1 10 20 30 40", SOAModel{
+			RName: types.StringValue("admin"), Refresh: types.Int64Value(10), Retry: types.Int64Value(20),
+			Expire: types.Int64Value(30), TTL: types.Int64Value(40), CreateRecord: types.BoolValue(true),
+		}},
+		"powerdns default": {pdnsDefaultSOAMName + " hostmaster.example.com. 0 10800 3600 604800 3600", SOAModel{
+			RName: types.StringValue("hostmaster"), Refresh: types.Int64Value(defaultSOARefresh), Retry: types.Int64Value(defaultSOARetry),
+			Expire: types.Int64Value(defaultSOAExpire), TTL: types.Int64Value(defaultSOATTL), CreateRecord: types.BoolValue(false),
+		}},
+	}
+	for name, tt := range tests {
+		zone := pdns_client.PDNSZone{Name: "example.com.", Rrsets: []pdns_client.Rrset{
+			{Type: "SOA", Name: "example.com.", Records: []pdns_client.Record{{Content: tt.content}}},
+		}}
+		obj, diags := readSOA(ctx, zone, null)
+		if diags.HasError() {
+			t.Fatalf("%s: %v", name, diags)
+		}
+		var got SOAModel
+		if diags := obj.As(ctx, &got, basetypes.ObjectAsOptions{}); diags.HasError() {
+			t.Fatalf("%s: %v", name, diags)
+		}
+		if got != tt.want {
+			t.Errorf("%s: soa = %+v, want %+v", name, got, tt.want)
+		}
+	}
+
+	// Without a SOA record the attribute stays as it is.
+	if obj, diags := readSOA(ctx, pdns_client.PDNSZone{Name: "example.com."}, null); diags.HasError() || !obj.IsNull() {
+		t.Errorf("without SOA record: %v, %v", obj, diags)
 	}
 }
 
