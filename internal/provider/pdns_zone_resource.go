@@ -435,6 +435,14 @@ func (r *ZoneResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	}
 
 	zone, err := r.providerData.pdnsClient.GetZone(ctx, data.Name.ValueString(), true, "")
+	if isNotFound(err) {
+		resp.Diagnostics.AddWarning(
+			"Zone not found",
+			fmt.Sprintf("The zone %q no longer exists on the PowerDNS server and was removed from state. It will be re-created on the next apply.", data.Name.ValueString()),
+		)
+		resp.State.RemoveResource(ctx)
+		return
+	}
 	if handleClientError(&resp.Diagnostics, err) {
 		return
 	}
@@ -611,6 +619,9 @@ func (r *ZoneResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 	}
 
 	err := r.providerData.pdnsClient.DeleteZone(ctx, data.Name.ValueString())
+	if isNotFound(err) {
+		return
+	}
 	handleClientError(&resp.Diagnostics, err)
 }
 
