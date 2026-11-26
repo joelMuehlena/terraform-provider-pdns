@@ -177,6 +177,10 @@ func (r *TSIGKeyResource) Read(ctx context.Context, req resource.ReadRequest, re
 
 	key, err := r.providerData.pdnsClient.GetTSIGKey(ctx, data.ID.ValueString())
 	if isNotFound(err) {
+		resp.Diagnostics.AddWarning(
+			"TSIG key not found",
+			fmt.Sprintf("The TSIG key %q no longer exists on the PowerDNS server and was removed from state. It will be re-created on the next apply.", data.ID.ValueString()),
+		)
 		resp.State.RemoveResource(ctx)
 		return
 	}
