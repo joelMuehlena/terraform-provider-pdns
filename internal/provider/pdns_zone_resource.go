@@ -179,7 +179,9 @@ func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 					"`kind`, so they never accept unlocked updates. Setting it to `false` removes the placeholder.\n\n" +
 					"On PowerDNS 5.0 and later, prefer the server setting `dnsupdate-require-tsig=yes`: it refuses every update that is not " +
 					"signed by a key listed for the zone, for all zones and from the moment they exist, so this lock is not needed. " +
-					"Use the lock on 4.9 (which does not have the setting) or where the server configuration cannot be changed. Defaults to `false`.",
+					"Use the lock on 4.9 (which does not have the setting) or where the server configuration cannot be changed. " +
+					"The setting applies to every zone of the server; for per-zone control, also on 5.0+, leave `dnsupdate-require-tsig` " +
+					"off and set `lock_dnsupdate = true` only on the zones that must refuse unsigned updates. Defaults to `false`.",
 				Optional: true,
 				Computed: true,
 				Default:  booldefault.StaticBool(false),
