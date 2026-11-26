@@ -2,7 +2,6 @@ package provider
 
 import (
 	"context"
-	"fmt"
 	"regexp"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
@@ -16,6 +15,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/samber/lo"
 	"gitlab.com/joelMuehlena/homelab/code/terraform/provider/terraform-provider-pdns/internal/pdns_client"
 )
@@ -187,7 +187,9 @@ func (r *RecordResource) Read(ctx context.Context, req resource.ReadRequest, res
 	})
 
 	if !isFound {
-		resp.Diagnostics.AddError("Record not found", fmt.Sprintf("Failed to find a record with name '%s' and type '%s'", expandedName, data.Type.ValueString()))
+		// Deleted out of band: drop it from state so that it is re-created.
+		tflog.Warn(ctx, "Record not found, removing it from state", map[string]any{"name": expandedName, "type": data.Type.ValueString()})
+		resp.State.RemoveResource(ctx)
 		return
 	}
 
