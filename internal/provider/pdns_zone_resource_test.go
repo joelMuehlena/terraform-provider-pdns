@@ -191,6 +191,59 @@ func TestZoneResourceWithoutSOARecord(t *testing.T) {
 	})
 }
 
+func TestZoneResourceFullyQualifiedNames(t *testing.T) {
+	t.Parallel()
+	fake := newFakePDNS(t)
+	today := time.Now().Format("20060102")
+	config := zoneConfig(fake, `
+  nameservers = [{ hostname = "ns1.example.test.", address = "10.0.0.1" }]
+  soa         = { rname = "hostmaster.example.test." }`)
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				// Fully qualified names inside the zone are read back with
+				// their configured spelling, so there is no diff after apply.
+				Config: config,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("pdns_zone.z", "soa.rname", "hostmaster.example.test."),
+					resource.TestCheckResourceAttr("pdns_zone.z", "nameservers.0.hostname", "ns1.example.test."),
+				),
+			},
+			{
+				// Re-applying does not rewrite the SOA (the serial stays).
+				Config: config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				Check: resource.TestCheckResourceAttr("pdns_zone.z", "serial", today+"01"),
+			},
+			{
+				// A changed rname still shows as drift and is corrected.
+				PreConfig: func() {
+					fake.mutate(func(f *fakePDNS) {
+						z := f.zones["example.test"]
+						for i, rr := range z.rrsets {
+							if rr.Type == "SOA" {
+								z.rrsets[i].Records = []pdns_client.Record{{Content: "ns1.example.test. admin.example.test. " + today + "01 86400 7200 4000000 11200"}}
+							}
+						}
+					})
+				},
+				Config: config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction("pdns_zone.z", plancheck.ResourceActionUpdate)},
+				},
+				Check: checkRRsets(fake, "example.test.",
+					"SOA example.test. ns1.example.test. hostmaster.example.test. SERIAL 86400 7200 4000000 11200",
+					"A ns1.example.test. 10.0.0.1",
+				),
+			},
+		},
+	})
+}
+
 func TestZoneResourceErrors(t *testing.T) {
 	t.Parallel()
 
