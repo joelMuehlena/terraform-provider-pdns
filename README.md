@@ -81,6 +81,7 @@ mise run vet       # go vet
 mise run test      # unit tests
 mise run lint      # golangci-lint
 mise run generate  # format examples and regenerate docs
+mise run testacc   # acceptance tests against PowerDNS in docker
 ```
 
 ### Acceptance tests
@@ -95,9 +96,9 @@ signed RFC2136 update test.
 tears the server down:
 
 ```sh
-test/acc/run.sh                                   # PowerDNS 5.1, gsqlite3
-PDNS_VERSION=4.9 PDNS_BACKEND=gpgsql test/acc/run.sh -v
-COMPOSE="podman compose" test/acc/run.sh          # podman instead of docker
+mise run testacc                                   # PowerDNS 5.1, gsqlite3
+PDNS_VERSION=4.9 PDNS_BACKEND=gpgsql mise run testacc -- -v
+COMPOSE="podman compose" mise run testacc          # podman instead of docker
 ```
 
 CI runs PowerDNS 4.9, 5.0 and 5.1, each with the `gsqlite3` and `gpgsql`
