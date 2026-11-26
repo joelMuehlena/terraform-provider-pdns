@@ -421,10 +421,10 @@ func (r *ZoneTSIGKeyResource) write(ctx context.Context, zone, keyID, keyName st
 		}
 		var master, slave *[]string
 		if current.AXFR != want.AXFR {
-			master = lo.ToPtr(setDNSName(z.MasterTsigKeyIDS, keyID, want.AXFR))
+			master = new(setDNSName(z.MasterTsigKeyIDS, keyID, want.AXFR))
 		}
 		if current.Secondary != want.Secondary {
-			slave = lo.ToPtr(setDNSName(z.SlaveTsigKeyIDS, keyID, want.Secondary))
+			slave = new(setDNSName(z.SlaveTsigKeyIDS, keyID, want.Secondary))
 		}
 		if err := client.UpdateZoneTSIGKeyIDs(ctx, zone, master, slave); err != nil {
 			return err

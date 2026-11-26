@@ -135,15 +135,15 @@ func TestDiff(t *testing.T) {
 	// Addresses are separate pointers with equal values, as produced by
 	// decoding plan and state independently.
 	current := []Nameserver{
-		{Hostname: "ns1", Address: lo.ToPtr("10.0.0.1")},
-		{Hostname: "ns2", Address: lo.ToPtr("10.0.0.2")},
+		{Hostname: "ns1", Address: new("10.0.0.1")},
+		{Hostname: "ns2", Address: new("10.0.0.2")},
 		{Hostname: "ns3"},
 	}
 	planned := []Nameserver{
-		{Hostname: "ns1", Address: lo.ToPtr("10.0.0.1")}, // unchanged
-		{Hostname: "ns2", Address: lo.ToPtr("10.0.0.9")}, // changed
+		{Hostname: "ns1", Address: new("10.0.0.1")}, // unchanged
+		{Hostname: "ns2", Address: new("10.0.0.9")}, // changed
 		{Hostname: "ns3"}, // unchanged, no address
-		{Hostname: "ns4", Address: lo.ToPtr("10.0.0.4")}, // added
+		{Hostname: "ns4", Address: new("10.0.0.4")}, // added
 	}
 
 	addedOrChanged, deleted := Diff(planned, current)
@@ -263,11 +263,11 @@ func TestNameserverRecordChanges(t *testing.T) {
 
 	records, diags := nameserverRecordChanges(ctx,
 		[]Nameserver{
-			{Hostname: "ns1", Address: lo.ToPtr("10.0.0.1")},
+			{Hostname: "ns1", Address: new("10.0.0.1")},
 			{Hostname: "ns2"}, // no address: skipped
-			{Hostname: "ns3.other.org.", Address: lo.ToPtr("2001:db8::3")},
+			{Hostname: "ns3.other.org.", Address: new("2001:db8::3")},
 		},
-		[]Nameserver{{Hostname: "old", Address: lo.ToPtr("10.0.0.9")}},
+		[]Nameserver{{Hostname: "old", Address: new("10.0.0.9")}},
 		"example.com.",
 	)
 	if diags.HasError() {
@@ -284,8 +284,8 @@ func TestNameserverRecordChanges(t *testing.T) {
 	}
 
 	errorCases := map[string]struct{ added, deleted []Nameserver }{
-		"invalid added address":   {added: []Nameserver{{Hostname: "ns1", Address: lo.ToPtr("bad")}}},
-		"invalid deleted address": {deleted: []Nameserver{{Hostname: "ns1", Address: lo.ToPtr("bad")}}},
+		"invalid added address":   {added: []Nameserver{{Hostname: "ns1", Address: new("bad")}}},
+		"invalid deleted address": {deleted: []Nameserver{{Hostname: "ns1", Address: new("bad")}}},
 		"deleted without address": {deleted: []Nameserver{{Hostname: "ns1"}}},
 	}
 	for name, tc := range errorCases {
@@ -306,8 +306,8 @@ func TestReadNameservers(t *testing.T) {
 	}
 
 	list, diags := readNameservers(zone, []Nameserver{
-		{Hostname: "ns1", Address: lo.ToPtr("10.0.0.1")},
-		{Hostname: "ns2", Address: lo.ToPtr("2001:db8::2")},
+		{Hostname: "ns1", Address: new("10.0.0.1")},
+		{Hostname: "ns2", Address: new("2001:db8::2")},
 		{Hostname: "ns3"},
 	})
 	if diags.HasError() {
@@ -325,7 +325,7 @@ func TestReadNameservers(t *testing.T) {
 	}
 
 	// A configured address without a matching record is an error.
-	if _, diags := readNameservers(zone, []Nameserver{{Hostname: "ns1", Address: lo.ToPtr("10.0.0.99")}}); !diags.HasError() {
+	if _, diags := readNameservers(zone, []Nameserver{{Hostname: "ns1", Address: new("10.0.0.99")}}); !diags.HasError() {
 		t.Error("expected error for missing address record")
 	}
 }
@@ -363,8 +363,8 @@ func TestCreateZoneFromData(t *testing.T) {
 		CreateRecord: types.BoolValue(true),
 	}
 	data := zoneModel(t, []Nameserver{
-		{Hostname: "ns1", Address: lo.ToPtr("10.0.0.1")},
-		{Hostname: "ns2.other.org.", Address: lo.ToPtr("2001:db8::2")},
+		{Hostname: "ns1", Address: new("10.0.0.1")},
+		{Hostname: "ns2.other.org.", Address: new("2001:db8::2")},
 		{Hostname: "ns3"},
 	}, soa)
 
@@ -412,7 +412,7 @@ func TestCreateZoneFromDataInvalidAddress(t *testing.T) {
 		RName: types.StringValue("hostmaster"), Refresh: types.Int64Value(1), Retry: types.Int64Value(1),
 		Expire: types.Int64Value(1), TTL: types.Int64Value(1), CreateRecord: types.BoolValue(true),
 	}
-	_, _, diags := createZoneFromData(context.Background(), zoneModel(t, []Nameserver{{Hostname: "ns1", Address: lo.ToPtr("bad")}}, soa))
+	_, _, diags := createZoneFromData(context.Background(), zoneModel(t, []Nameserver{{Hostname: "ns1", Address: new("bad")}}, soa))
 	if !diags.HasError() {
 		t.Fatal("expected error for invalid address")
 	}
