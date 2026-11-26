@@ -125,8 +125,13 @@ tears the server down:
 mise run testacc                                   # PowerDNS 5.1, gsqlite3
 PDNS_VERSION=4.9 PDNS_BACKEND=gpgsql mise run testacc -- -v
 COMPOSE="podman compose" mise run testacc          # podman instead of docker
+PDNS_ACC_SERVER_ARGS=--dnsupdate-require-tsig=yes mise run testacc  # extra server flags
 ```
 
+`TestAccDNSUpdateRequireTSIG` only runs against a server with
+`dnsupdate-require-tsig=yes` (PowerDNS 5.0+). See `test/acc/run.sh` for all
+settings, e.g. the ports and the compose project name.
+
 CI runs PowerDNS 4.9, 5.0 and 5.1, each with the `gsqlite3` and `gpgsql`
-backends. Another backend is one `test/acc/compose.<backend>.yml` (plus its
-config) and one matrix entry.
+backends, plus 5.0 and 5.1 with `dnsupdate-require-tsig=yes`. Another backend
+is one `test/acc/compose.<backend>.yml` (plus its config) and one matrix entry.

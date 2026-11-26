@@ -92,7 +92,7 @@ jobs:
           go test -race -count=1 -cover ./...
 
   acceptance:
-    name: acceptance (pdns ${{ matrix.pdns }}, ${{ matrix.backend }})
+    name: acceptance (pdns ${{ matrix.pdns }}, ${{ matrix.backend }}${{ matrix.server_args && format(', {0}', matrix.server_args) || '' }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -100,6 +100,13 @@ jobs:
         # Each backend needs a test/acc/compose.<backend>.yml.
         pdns: ["4.9", "5.0", "5.1"]
         backend: [gsqlite3, gpgsql]
+        # Extra pdns_server arguments (PDNS_ACC_SERVER_ARGS).
+        server_args: [""]
+        include:
+          # The recommended dnsupdate-require-tsig (5.0+, refused by 4.9). It
+          # does not depend on the backend.
+          - { pdns: "5.0", backend: gsqlite3, server_args: "--dnsupdate-require-tsig=yes" }
+          - { pdns: "5.1", backend: gsqlite3, server_args: "--dnsupdate-require-tsig=yes" }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -114,4 +121,5 @@ jobs:
         env:
           PDNS_VERSION: ${{ matrix.pdns }}
           PDNS_BACKEND: ${{ matrix.backend }}
+          PDNS_ACC_SERVER_ARGS: ${{ matrix.server_args }}
         run: test/acc/run.sh -v
