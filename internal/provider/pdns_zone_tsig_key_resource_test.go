@@ -359,11 +359,36 @@ func TestZoneTSIGKeyApplyCancelled(t *testing.T) {
 	fake.addKey("k", secretA)
 
 	ctx, cancel := context.WithCancel(context.Background())
-	// Cancel during the settle delay after the first successful write.
-	fake.afterWrite = func(*fakePDNS, *http.Request) { cancel() }
+	defer cancel()
 
-	if err := newTestAttachment(fake).apply(ctx, "z.test.", "k.", "k", tsigPurposes{AXFR: true}); err == nil {
-		t.Fatal("expected context error")
+	// Cancel during the settle delay after the first successful write: the
+	// last request of the check that verifies the write is the metadata GET,
+	// after which apply sleeps for the settle delay.
+	writes, scheduled := 0, false
+	fake.afterWrite = func(*fakePDNS, *http.Request) { writes++ }
+	fake.reject = func(r *http.Request) bool {
+		if writes == 1 && !scheduled && r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/metadata/") {
+			scheduled = true
+			time.AfterFunc(200*time.Millisecond, cancel)
+		}
+		return false
+	}
+
+	r := newTestAttachment(fake)
+	r.retryConfig.settle = time.Minute
+
+	start := time.Now()
+	err := r.apply(ctx, "z.test.", "k.", "k", tsigPurposes{AXFR: true})
+	if !scheduled {
+		t.Fatal("the cancellation was never scheduled")
+	}
+	// Only the sleep returns ctx.Err() itself; a request cancelled in flight
+	// fails with a *url.Error wrapping it.
+	if err != context.Canceled {
+		t.Fatalf("apply = %v, want context.Canceled from the settle delay", err)
+	}
+	if elapsed := time.Since(start); elapsed > 30*time.Second {
+		t.Fatalf("apply returned after %s, the settle delay was not interrupted", elapsed)
 	}
 }
 
