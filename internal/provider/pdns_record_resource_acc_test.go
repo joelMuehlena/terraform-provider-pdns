@@ -149,3 +149,73 @@ resource "pdns_record" "r" {
 		}},
 	})
 }
+
+// PowerDNS returns records sorted and in canonical form. Records configured in
+// another order or spelling must converge, while a change on the server must
+// still be detected.
+func TestAccRecordResourceServerOrderAndCanonicalForm(t *testing.T) {
+	env := testAccPreCheck(t)
+	zone := env.createZone(t, "canonical")
+	www := "www." + zone
+
+	config := env.providerConfig() + fmt.Sprintf(`
+resource "pdns_record" "a" {
+  zone    = %[1]q
+  name    = "www"
+  type    = "A"
+  records = ["10.0.0.9", "10.0.0.1", "10.0.0.5"]
+}
+
+resource "pdns_record" "aaaa" {
+  zone    = %[1]q
+  name    = "www"
+  type    = "AAAA"
+  records = ["2345:0425:2CA1:0000:0000:0567:5673:23b5", "::1"]
+}
+
+resource "pdns_record" "mx" {
+  zone    = %[1]q
+  name    = "mail"
+  type    = "MX"
+  # Out of order. Extra whitespace is not used here: 5.1 normalizes it, while
+  # 4.9 and 5.0 reject it with 422 "Not in expected format".
+  records = ["20 mx2.%[1]s", "10 mx1.%[1]s"]
+}
+`, zone)
+
+	resource.ParallelTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				// The step fails if the refresh plan after apply is not empty.
+				Config: config,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					env.checkRRset(zone, www, "A", 1800, []string{"10.0.0.1", "10.0.0.5", "10.0.0.9"}, []string{}),
+					env.checkRRset(zone, www, "AAAA", 1800, []string{"2345:425:2ca1::567:5673:23b5", "::1"}, []string{}),
+					env.checkRRset(zone, "mail."+zone, "MX", 1800, []string{"10 mx1." + zone, "20 mx2." + zone}, []string{}),
+				),
+			},
+			{
+				// A record changed on the server is detected and restored.
+				PreConfig: func() {
+					err := env.client.UpdateZoneRecords(context.Background(), zone, []pdns_client.Rrset{{
+						Name: www, Type: "AAAA", Changetype: "REPLACE", TTL: 1800,
+						Records: []pdns_client.Record{{Content: "::1"}, {Content: "::2"}},
+					}})
+					if err != nil {
+						t.Fatal(err)
+					}
+				},
+				Config: config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction("pdns_record.aaaa", plancheck.ResourceActionUpdate),
+						plancheck.ExpectResourceAction("pdns_record.a", plancheck.ResourceActionNoop),
+						plancheck.ExpectResourceAction("pdns_record.mx", plancheck.ResourceActionNoop),
+					},
+				},
+				Check: env.checkRRset(zone, www, "AAAA", 1800, []string{"2345:425:2ca1::567:5673:23b5", "::1"}, []string{}),
+			},
+		},
+	})
+}

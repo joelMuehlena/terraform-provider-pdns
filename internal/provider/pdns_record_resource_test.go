@@ -177,3 +177,106 @@ func TestRecordResourceErrors(t *testing.T) {
 		})
 	}
 }
+
+// PowerDNS returns the records of an rrset sorted and in canonical form; the
+// configured order and spelling must still converge to an empty plan, while a
+// real change on the server must still show up.
+func TestRecordResourceServerOrderAndCanonicalForm(t *testing.T) {
+	t.Parallel()
+	fake := newFakePDNS(t)
+	fake.addZone("example.test.")
+
+	config := fake.providerConfig() + `
+resource "pdns_record" "a" {
+  zone    = "example.test."
+  name    = "www"
+  type    = "A"
+  records = ["10.0.0.9", "10.0.0.1", "10.0.0.5"]
+}
+
+resource "pdns_record" "aaaa" {
+  zone    = "example.test."
+  name    = "www"
+  type    = "AAAA"
+  records = ["2345:0425:2CA1:0000:0000:0567:5673:23b5", "::1"]
+}
+
+resource "pdns_record" "mx" {
+  zone    = "example.test."
+  name    = "mail"
+  type    = "MX"
+  records = ["20   mx2.example.test.", "10 mx1.example.test."]
+}
+`
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				// The test framework fails the step if the plan after apply
+				// (which refreshes) is not empty.
+				Config: config,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					checkFakeRRset(fake, "www.example.test.", "A", 1800, []string{"10.0.0.1", "10.0.0.5", "10.0.0.9"}, nil),
+					checkFakeRRset(fake, "www.example.test.", "AAAA", 1800, []string{"2345:425:2ca1::567:5673:23b5", "::1"}, nil),
+					checkFakeRRset(fake, "mail.example.test.", "MX", 1800, []string{"10 mx1.example.test.", "20 mx2.example.test."}, nil),
+					resource.TestCheckResourceAttr("pdns_record.a", "records.0", "10.0.0.9"),
+					resource.TestCheckResourceAttr("pdns_record.aaaa", "records.0", "2345:0425:2CA1:0000:0000:0567:5673:23b5"),
+				),
+			},
+			{
+				// A record changed on the server is detected and restored.
+				PreConfig: func() {
+					fake.mutate(func(f *fakePDNS) {
+						z := f.zones["example.test"]
+						for i := range z.rrsets {
+							if z.rrsets[i].Type == "AAAA" {
+								z.rrsets[i].Records = []pdns_client.Record{{Content: "::1"}, {Content: "::2"}}
+							}
+						}
+					})
+				},
+				Config: config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction("pdns_record.aaaa", plancheck.ResourceActionUpdate),
+						plancheck.ExpectResourceAction("pdns_record.a", plancheck.ResourceActionNoop),
+						plancheck.ExpectResourceAction("pdns_record.mx", plancheck.ResourceActionNoop),
+					},
+				},
+				Check: checkFakeRRset(fake, "www.example.test.", "AAAA", 1800, []string{"2345:425:2ca1::567:5673:23b5", "::1"}, nil),
+			},
+		},
+	})
+}
+
+func TestReconcileRecords(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		typ           string
+		prior, server []string
+		want          []string
+	}{
+		"same":            {"A", []string{"10.0.0.1"}, []string{"10.0.0.1"}, []string{"10.0.0.1"}},
+		"server order":    {"A", []string{"10.0.0.9", "10.0.0.1"}, []string{"10.0.0.1", "10.0.0.9"}, []string{"10.0.0.9", "10.0.0.1"}},
+		"canonical aaaa":  {"AAAA", []string{"2345:0425:2CA1:0000:0000:0567:5673:23b5"}, []string{"2345:425:2ca1::567:5673:23b5"}, []string{"2345:0425:2CA1:0000:0000:0567:5673:23b5"}},
+		"mx whitespace":   {"MX", []string{"10   mx."}, []string{"10 mx."}, []string{"10   mx."}},
+		"txt whitespace":  {"TXT", []string{`"a  b"`}, []string{`"a b"`}, []string{`"a b"`}},
+		"import":          {"A", nil, []string{"10.0.0.1"}, []string{"10.0.0.1"}},
+		"changed":         {"A", []string{"10.0.0.9", "10.0.0.1"}, []string{"10.0.0.1", "10.0.0.2"}, []string{"10.0.0.1", "10.0.0.2"}},
+		"changed aaaa":    {"AAAA", []string{"::0001", "::3"}, []string{"::1", "::2"}, []string{"::0001", "::2"}},
+		"record added":    {"A", []string{"10.0.0.1"}, []string{"10.0.0.1", "10.0.0.2"}, []string{"10.0.0.1", "10.0.0.2"}},
+		"record removed":  {"A", []string{"10.0.0.1", "10.0.0.2"}, []string{"10.0.0.2"}, []string{"10.0.0.2"}},
+		"duplicate prior": {"AAAA", []string{"::1", "::0001"}, []string{"::1"}, []string{"::1"}},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if got := reconcileRecords(tt.typ, tt.prior, tt.server); !slices.Equal(got, tt.want) {
+				t.Errorf("reconcileRecords(%q, %q, %q) = %q, want %q", tt.typ, tt.prior, tt.server, got, tt.want)
+			}
+		})
+	}
+}
