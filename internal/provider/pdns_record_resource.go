@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
@@ -327,7 +329,25 @@ func (r *RecordResource) Delete(ctx context.Context, req resource.DeleteRequest,
 	handleClientError(&resp.Diagnostics, err)
 }
 
-// TODO: Import record by name
+// ImportState imports a record by an id of the form <zone>/<name>/<type>.
+// name is taken as given, relative to the zone or fully qualified, so it must
+// be written as in the configuration; zone gets a trailing dot if it lacks one.
 func (r *RecordResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resource.ImportStatePassthroughID(ctx, path.Root("name"), req, resp)
+	parts := strings.Split(req.ID, "/")
+	if len(parts) != 3 || slices.Contains(parts, "") {
+		resp.Diagnostics.AddError(
+			"Invalid import ID",
+			fmt.Sprintf("Expected an import ID of the form <zone>/<name>/<type>, e.g. example.com./www/A, got %q.", req.ID),
+		)
+		return
+	}
+
+	zone, name, typ := parts[0], parts[1], strings.ToUpper(parts[2])
+	if !strings.HasSuffix(zone, ".") {
+		zone += "."
+	}
+
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("zone"), zone)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("name"), name)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("type"), typ)...)
 }

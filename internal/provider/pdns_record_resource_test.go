@@ -289,6 +289,64 @@ func TestRecordResourceTypeChange(t *testing.T) {
 	})
 }
 
+func TestRecordResourceImport(t *testing.T) {
+	t.Parallel()
+	fake := newFakePDNS(t)
+	fake.addZone("example.test.")
+
+	config := fake.providerConfig() + `
+resource "pdns_record" "relative" {
+  zone     = "example.test."
+  name     = "www"
+  type     = "A"
+  ttl      = 60
+  records  = ["10.0.0.1", "10.0.0.2"]
+  comments = ["managed by terraform"]
+}
+
+resource "pdns_record" "fqdn" {
+  zone    = "example.test."
+  name    = "api.example.test."
+  type    = "CNAME"
+  records = ["www.example.test."]
+}
+`
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: config},
+			{
+				ResourceName:                         "pdns_record.relative",
+				ImportState:                          true,
+				ImportStateId:                        "example.test./www/A",
+				ImportStateVerify:                    true,
+				ImportStateVerifyIdentifierAttribute: "name",
+			},
+			{
+				// The zone may be given without the trailing dot.
+				ResourceName:                         "pdns_record.fqdn",
+				ImportState:                          true,
+				ImportStateId:                        "example.test/api.example.test./CNAME",
+				ImportStateVerify:                    true,
+				ImportStateVerifyIdentifierAttribute: "name",
+			},
+			{
+				ResourceName:  "pdns_record.relative",
+				ImportState:   true,
+				ImportStateId: "example.test./missing/A",
+				ExpectError:   regexp.MustCompile(`Cannot import non-existent remote object`),
+			},
+			{
+				ResourceName:  "pdns_record.relative",
+				ImportState:   true,
+				ImportStateId: "www",
+				ExpectError:   regexp.MustCompile(`Expected an import ID of the form <zone>/<name>/<type>`),
+			},
+		},
+	})
+}
+
 func TestReconcileRecords(t *testing.T) {
 	t.Parallel()
 
