@@ -183,6 +183,12 @@ func (f *fakePDNS) createZone(w http.ResponseWriter, r *http.Request) bool {
 
 	zone := &fakeZone{name: in.Name, kind: in.Kind, dnssec: in.Dnssec, metadata: map[string][]string{}}
 	zone.rrsets = append(zone.rrsets, in.Rrsets...)
+	if _, ok := zone.rrset(in.Name, "SOA"); !ok {
+		// Like PowerDNS, create a default SOA record if none is given.
+		zone.rrsets = append(zone.rrsets, pdns_client.Rrset{Name: in.Name, Type: "SOA", TTL: 3600, Records: []pdns_client.Record{{
+			Content: "a.misconfigured.dns.server.invalid. hostmaster." + in.Name + " 0 10800 3600 604800 3600",
+		}}})
+	}
 	if len(in.Nameservers) > 0 {
 		ns := pdns_client.Rrset{Name: in.Name, Type: "NS", TTL: 3600}
 		for _, n := range in.Nameservers {

@@ -182,7 +182,10 @@ func TestZoneResourceWithoutSOARecord(t *testing.T) {
     rname         = "hostmaster"
     create_record = false
   }`),
-			Check: checkRRsets(fake, "example.test."),
+			// The default SOA record of the server is not read back into soa.
+			Check: checkRRsets(fake, "example.test.",
+				"SOA example.test. a.misconfigured.dns.server.invalid. hostmaster.example.test. SERIAL 10800 3600 604800 3600",
+			),
 		}},
 	})
 }

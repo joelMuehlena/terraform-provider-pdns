@@ -380,14 +380,19 @@ func (r *ZoneResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 		return item.Type == "SOA" && item.Name == data.Name.ValueString()
 	})
 
+	var currentSoaData SOA
 	if isFound {
-		var currentSoaData SOA
 		diags := data.SOA.As(ctx, &currentSoaData, basetypes.ObjectAsOptions{})
 		if diags.HasError() {
 			resp.Diagnostics = append(resp.Diagnostics, diags...)
 			return
 		}
+	}
 
+	// With create_record = false the SOA record is not managed by the
+	// provider; PowerDNS creates a default one that must not be read back
+	// into the configured soa values.
+	if isFound && currentSoaData.CreateRecord {
 		soa, err := soaModelFromRecord(soaRecord.Records[0].Content, zone.Name, currentSoaData.CreateRecord)
 		if err != nil {
 			resp.Diagnostics.AddError("Parsing Error", fmt.Sprintf("Failed to read SOA record: %s", err))
