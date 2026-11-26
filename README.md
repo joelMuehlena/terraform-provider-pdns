@@ -72,9 +72,13 @@ See the [`docs/`](./docs) directory for the full resource reference.
 
 ## Development
 
+Tools and tasks are managed with [mise](https://mise.jdx.dev/):
+
 ```sh
-make test      # unit tests (needs a terraform or tofu binary on PATH)
-make lint      # golangci-lint
-make generate  # regenerate docs (requires tfplugindocs)
-go build ./...
+mise install       # install pinned go, golangci-lint, terraform, opentofu
+mise run build     # build the provider
+mise run vet       # go vet
+mise run test      # unit tests
+mise run lint      # golangci-lint
+mise run generate  # format examples and regenerate docs
 ```

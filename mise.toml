@@ -1,0 +1,30 @@
+# Development tools and tasks. Install with `mise install`, list tasks with `mise tasks`.
+
+[tools]
+go = "1.27.4"
+golangci-lint = "2.15.0"
+# Docs generation formats examples with tofu and exports the schema with terraform;
+# the unit tests drive terraform.
+terraform = "1.17.2"
+opentofu = "1.13.10"
+
+[tasks.build]
+description = "Build the provider"
+run = "go build ./..."
+
+[tasks.vet]
+description = "Run go vet"
+run = "go vet ./..."
+
+[tasks.test]
+description = "Run unit tests"
+run = "go test -race -cover ./..."
+
+[tasks.lint]
+description = "Run golangci-lint"
+run = "golangci-lint run ./..."
+
+[tasks.generate]
+description = "Format examples and regenerate docs"
+dir = "{{config_root}}/tools"
+run = "go generate ./..."
