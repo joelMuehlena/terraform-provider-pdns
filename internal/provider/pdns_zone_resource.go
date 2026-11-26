@@ -367,20 +367,7 @@ func (r *ZoneResource) Create(ctx context.Context, req resource.CreateRequest, r
 
 	data.Serial = types.StringValue(serial)
 
-	if !data.LockDNSUpdate.ValueBool() || isSecondaryKind(newZone.Kind) {
-		_, err = r.providerData.pdnsClient.CreateZone(ctx, newZone)
-		if handleClientError(&resp.Diagnostics, err) {
-			return
-		}
-		if data.LockDNSUpdate.ValueBool() &&
-			handleClientError(&resp.Diagnostics, r.providerData.setDNSUpdateLock(ctx, newZone.Name, true)) {
-			return
-		}
-		resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
-		return
-	}
-
-	if handleClientError(&resp.Diagnostics, r.createLocked(ctx, newZone)) {
+	if handleClientError(&resp.Diagnostics, r.createZone(ctx, newZone, data.LockDNSUpdate.ValueBool())) {
 		return
 	}
 
@@ -393,43 +380,67 @@ func isSecondaryKind(kind string) bool {
 	return kind == "Slave" || kind == "Consumer"
 }
 
-// createLocked creates a zone that never accepts unlocked dynamic updates.
-// PowerDNS has no way to set metadata in the create request, so the zone is
-// created as a Slave without primaries (updates are forwarded to its
-// primaries, of which there are none, and fail), then locked, and only then
-// switched to its real kind. Records, TTLs and the serial are the same as when
-// creating the zone with its kind directly. DNSSEC is enabled in the create
-// request already: PowerDNS signs a Slave zone just like any other, and
-// enabling it only with the kind switch fails for zones without a SOA record
-// (create_record = false) because rectifying them fails, while sending the
-// unchanged dnssec = true with the switch is a no-op. The temporary Slave is
-// created without primaries, so it neither transfers the zone nor forwards
-// updates; any configured masters are only set after the switch. (masters are
-// only valid for Slave and Consumer zones, which are created directly, so this
-// only matters if the kind was unknown when the configuration was validated.)
-// If a step after the create fails, the zone is deleted again so it is not
-// left half configured.
-func (r *ZoneResource) createLocked(ctx context.Context, zone pdns_client.PDNSZone) error {
-	client := r.providerData.pdnsClient
-	kind, masters := zone.Kind, zone.Masters
-	zone.Kind, zone.Masters = "Slave", nil
+// createZone creates the zone and then applies what the create request cannot
+// carry (the dnsupdate lock, and the kind and masters of a locked create). If
+// a step after the create request fails, the zone is deleted again: it is not
+// in the state, so it would make the next apply fail with "Zone already
+// exists". This holds for every create path.
+//
+// Zones of a secondary kind, and all zones without lock, are created with
+// their kind directly. Other zones with lock are created by createLocked.
+func (r *ZoneResource) createZone(ctx context.Context, zone pdns_client.PDNSZone, lock bool) error {
+	viaSlave := lock && !isSecondaryKind(zone.Kind)
+	request := zone
+	if viaSlave {
+		request.Kind, request.Masters = "Slave", nil
+	}
 
-	if _, err := client.CreateZone(ctx, zone); err != nil {
+	if _, err := r.providerData.pdnsClient.CreateZone(ctx, request); err != nil {
 		return err
 	}
 
-	err := r.providerData.setDNSUpdateLock(ctx, zone.Name, true)
-	if err == nil {
-		err = client.UpdateZoneSettings(ctx, zone.Name, kind, zone.Dnssec)
-	}
-	if err == nil && len(masters) > 0 {
-		err = client.UpdateZoneMasters(ctx, zone.Name, masters)
+	var err error
+	switch {
+	case viaSlave:
+		err = r.createLocked(ctx, zone)
+	case lock:
+		err = r.providerData.setDNSUpdateLock(ctx, zone.Name, true)
 	}
 	if err != nil {
-		if delErr := client.DeleteZone(ctx, zone.Name); delErr != nil {
+		if delErr := r.providerData.pdnsClient.DeleteZone(ctx, zone.Name); delErr != nil {
 			return fmt.Errorf("%w (removing the partially created zone also failed: %v)", err, delErr)
 		}
 		return err
+	}
+	return nil
+}
+
+// createLocked finishes the create of a zone that never accepts unlocked
+// dynamic updates. PowerDNS has no way to set metadata in the create request,
+// so createZone creates the zone as a Slave without primaries (updates are
+// forwarded to its primaries, of which there are none, and fail); it is then
+// locked, and only then switched to its real kind. Records, TTLs and the
+// serial are the same as when creating the zone with its kind directly.
+// DNSSEC is enabled in the create request already: PowerDNS signs a Slave zone
+// just like any other, and enabling it only with the kind switch fails for
+// zones without a SOA record (create_record = false) because rectifying them
+// fails, while sending the unchanged dnssec = true with the switch is a no-op.
+// The temporary Slave has no primaries, so it neither transfers the zone nor
+// forwards updates; any configured masters are only set after the switch.
+// (masters are only valid for Slave and Consumer zones, which are created
+// directly, so this only matters if the kind was unknown when the
+// configuration was validated.)
+func (r *ZoneResource) createLocked(ctx context.Context, zone pdns_client.PDNSZone) error {
+	client := r.providerData.pdnsClient
+
+	if err := r.providerData.setDNSUpdateLock(ctx, zone.Name, true); err != nil {
+		return err
+	}
+	if err := client.UpdateZoneSettings(ctx, zone.Name, zone.Kind, zone.Dnssec); err != nil {
+		return err
+	}
+	if len(zone.Masters) > 0 {
+		return client.UpdateZoneMasters(ctx, zone.Name, zone.Masters)
 	}
 	return nil
 }
