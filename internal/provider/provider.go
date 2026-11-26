@@ -3,15 +3,19 @@ package provider
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/function"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"gitlab.com/joelMuehlena/homelab/code/terraform/provider/terraform-provider-pdns/internal/pdns_client"
 )
@@ -49,7 +53,12 @@ type PDNSProviderModel struct {
 	APIKey        types.String `tfsdk:"api_key"`
 	ServerID      types.String `tfsdk:"server_id"`
 	SkipTLSVerify types.Bool   `tfsdk:"skip_tls_verify"`
+	Timeout       types.String `tfsdk:"timeout"`
 }
+
+// defaultTimeout bounds every request to the PowerDNS API unless the provider
+// sets timeout.
+const defaultTimeout = 30 * time.Second
 
 func (p *PDNSProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
 	resp.TypeName = "pdns"
@@ -79,8 +88,58 @@ func (p *PDNSProvider) Schema(ctx context.Context, req provider.SchemaRequest, r
 				Optional:            true,
 				Required:            false,
 			},
+			"timeout": schema.StringAttribute{
+				MarkdownDescription: "Timeout of each request to the PowerDNS API as a Go duration, e.g. `30s` or `2m`. " +
+					"Covers connecting, sending the request and reading the whole response. `0s` disables the timeout. Defaults to `30s`.",
+				Optional: true,
+				Validators: []validator.String{
+					durationValidator{},
+				},
+			},
 		},
 	}
+}
+
+// durationValidator accepts non-negative Go durations (time.ParseDuration).
+type durationValidator struct{}
+
+func (durationValidator) Description(context.Context) string {
+	return "value must be a non-negative duration such as 30s or 2m"
+}
+
+func (v durationValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (durationValidator) ValidateString(ctx context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	if _, err := parseTimeout(req.ConfigValue.ValueString()); err != nil {
+		resp.Diagnostics.AddAttributeError(req.Path, "Invalid duration", err.Error())
+	}
+}
+
+// parseTimeout parses the timeout attribute.
+func parseTimeout(s string) (time.Duration, error) {
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("%q is not a duration such as 30s or 2m: %w", s, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("%q is negative", s)
+	}
+	return d, nil
+}
+
+// newHTTPClient returns the client for the PowerDNS API. It starts from
+// http.DefaultTransport, which honors HTTP(S)_PROXY / NO_PROXY and has dial,
+// TLS handshake and idle timeouts, and bounds every request by timeout
+// (0 = no limit).
+func newHTTPClient(skipTLSVerify bool, timeout time.Duration) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: skipTLSVerify}
+	return &http.Client{Transport: transport, Timeout: timeout}
 }
 
 func (p *PDNSProvider) Configure(ctx context.Context, req provider.ConfigureRequest, resp *provider.ConfigureResponse) {
@@ -100,11 +159,16 @@ func (p *PDNSProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 		data.SkipTLSVerify = types.BoolValue(false)
 	}
 
-	client := &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: data.SkipTLSVerify.ValueBool()},
-		},
+	timeout := defaultTimeout
+	if !data.Timeout.IsNull() && !data.Timeout.IsUnknown() {
+		var err error
+		if timeout, err = parseTimeout(data.Timeout.ValueString()); err != nil {
+			resp.Diagnostics.AddAttributeError(path.Root("timeout"), "Invalid duration", err.Error())
+			return
+		}
 	}
+
+	client := newHTTPClient(data.SkipTLSVerify.ValueBool(), timeout)
 
 	resp.ResourceData = &PDNSProviderData{
 		pdnsClient: pdns_client.NewPDNSClient(

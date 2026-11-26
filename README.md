@@ -58,6 +58,9 @@ resource "pdns_record" "www" {
 | `api_key`         | yes      | API key used for the `X-API-Key` header (sensitive).                        |
 | `server_id`       | no       | Server id. Defaults to `localhost`.                                         |
 | `skip_tls_verify` | no       | Skip verification of the remote's TLS certificate. Defaults to `false`.     |
+| `timeout`         | no       | Timeout of each API request as a Go duration (`0s` disables it). Defaults to `30s`. |
+
+The provider honors the `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` environment variables.
 
 ## Resources
 
