@@ -1,0 +1,5 @@
+# gsqlite3 backend. The image ships an initialized database.
+services:
+  pdns:
+    volumes:
+      - ./gsqlite3.conf:/etc/powerdns/pdns.d/backend.conf:ro

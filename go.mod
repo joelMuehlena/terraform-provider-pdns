@@ -8,6 +8,7 @@ require (
 	github.com/hashicorp/terraform-plugin-go v0.31.0
 	github.com/hashicorp/terraform-plugin-log v0.11.0
 	github.com/hashicorp/terraform-plugin-testing v1.16.0
+	github.com/miekg/dns v1.1.73
 	github.com/samber/lo v1.53.0
 )
 

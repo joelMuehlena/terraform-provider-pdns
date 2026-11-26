@@ -1,0 +1,41 @@
+# PowerDNS Authoritative server for the acceptance tests.
+#
+# Combine with exactly one backend override file:
+#
+#   docker compose -f compose.yml -f compose.gsqlite3.yml up -d --wait
+#   docker compose -f compose.yml -f compose.gpgsql.yml up -d --wait
+#
+# Environment:
+#   PDNS_VERSION      series of the powerdns/pdns-auth-XY image: 49, 50 or 51 (default 51)
+#   PDNS_TAG          image tag (default latest)
+#   PDNS_ACC_API_KEY  API key (default acc-test-key)
+#   PDNS_ACC_PORT     host port of the HTTP API (default 8081)
+#   PDNS_ACC_DNS_PORT host port of the DNS listener, tcp and udp (default 15353,
+#                     as mDNS uses 5353 on macOS)
+#
+# The server listens on 5353 inside the container so that it also runs on
+# rootless podman, which cannot bind ports below 1024.
+services:
+  pdns:
+    image: docker.io/powerdns/pdns-auth-${PDNS_VERSION:-51}:${PDNS_TAG:-latest}
+    environment:
+      PDNS_AUTH_API_KEY: ${PDNS_ACC_API_KEY:-acc-test-key}
+    volumes:
+      - ./pdns.conf:/etc/powerdns/pdns.conf:ro
+    ports:
+      - "127.0.0.1:${PDNS_ACC_PORT:-8081}:8081/tcp"
+      - "127.0.0.1:${PDNS_ACC_DNS_PORT:-15353}:5353/tcp"
+      - "127.0.0.1:${PDNS_ACC_DNS_PORT:-15353}:5353/udp"
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - |
+          import os, urllib.request
+          urllib.request.urlopen(urllib.request.Request(
+              "http://127.0.0.1:8081/api/v1/servers/localhost",
+              headers={"X-API-Key": os.environ["PDNS_AUTH_API_KEY"]}), timeout=2)
+      interval: 2s
+      timeout: 3s
+      retries: 30
