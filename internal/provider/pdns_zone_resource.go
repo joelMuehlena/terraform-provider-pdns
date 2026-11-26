@@ -359,17 +359,17 @@ func (r *ZoneResource) Create(ctx context.Context, req resource.CreateRequest, r
 		return
 	}
 
-	newZone, serial, diags := createZoneFromData(ctx, data)
+	newZone, _, diags := createZoneFromData(ctx, data)
 	if diags.HasError() {
 		resp.Diagnostics = append(resp.Diagnostics, diags...)
 		return
 	}
 
-	data.Serial = types.StringValue(serial)
-
-	if handleClientError(&resp.Diagnostics, r.createZone(ctx, newZone, data.LockDNSUpdate.ValueBool())) {
+	serial, err := r.createZone(ctx, newZone, data.LockDNSUpdate.ValueBool())
+	if handleClientError(&resp.Diagnostics, err) {
 		return
 	}
+	data.Serial = types.StringValue(serial)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -384,11 +384,12 @@ func isSecondaryKind(kind string) bool {
 // carry (the dnsupdate lock, and the kind and masters of a locked create). If
 // a step after the create request fails, the zone is deleted again: it is not
 // in the state, so it would make the next apply fail with "Zone already
-// exists". This holds for every create path.
+// exists". This holds for every create path. It returns the serial of the
+// new zone on the server.
 //
 // Zones of a secondary kind, and all zones without lock, are created with
 // their kind directly. Other zones with lock are created by createLocked.
-func (r *ZoneResource) createZone(ctx context.Context, zone pdns_client.PDNSZone, lock bool) error {
+func (r *ZoneResource) createZone(ctx context.Context, zone pdns_client.PDNSZone, lock bool) (string, error) {
 	viaSlave := lock && !isSecondaryKind(zone.Kind)
 	request := zone
 	if viaSlave {
@@ -396,7 +397,7 @@ func (r *ZoneResource) createZone(ctx context.Context, zone pdns_client.PDNSZone
 	}
 
 	if _, err := r.providerData.pdnsClient.CreateZone(ctx, request); err != nil {
-		return err
+		return "", err
 	}
 
 	var err error
@@ -406,13 +407,29 @@ func (r *ZoneResource) createZone(ctx context.Context, zone pdns_client.PDNSZone
 	case lock:
 		err = r.providerData.setDNSUpdateLock(ctx, zone.Name, true)
 	}
+	var serial string
+	if err == nil {
+		serial, err = r.zoneSerial(ctx, zone.Name)
+	}
 	if err != nil {
 		if delErr := r.providerData.pdnsClient.DeleteZone(ctx, zone.Name); delErr != nil {
-			return fmt.Errorf("%w (removing the partially created zone also failed: %v)", err, delErr)
+			return "", fmt.Errorf("%w (removing the partially created zone also failed: %v)", err, delErr)
 		}
-		return err
+		return "", err
 	}
-	return nil
+	return serial, nil
+}
+
+// zoneSerial returns the serial of a zone on the server, as Read stores it.
+// PowerDNS sets its own serial when the SOA record is not given
+// (create_record = false) and changes it on writes (SOA-EDIT-API), so the
+// serial the provider wrote is not necessarily the one the zone has.
+func (r *ZoneResource) zoneSerial(ctx context.Context, name string) (string, error) {
+	zone, err := r.providerData.pdnsClient.GetZone(ctx, name, false, "")
+	if err != nil {
+		return "", err
+	}
+	return strconv.FormatInt(zone.Serial, 10), nil
 }
 
 // createLocked finishes the create of a zone that never accepts unlocked
@@ -593,10 +610,6 @@ func (r *ZoneResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		return
 	}
 
-	// The serial is computed and therefore unknown in the plan. It only changes
-	// when records are rewritten below; otherwise keep the current one.
-	plan.Serial = state.Serial
-
 	var newSoaData SOA
 	resp.Diagnostics.Append(plan.SOA.As(ctx, &newSoaData, basetypes.ObjectAsOptions{})...)
 	if resp.Diagnostics.HasError() {
@@ -659,13 +672,18 @@ func (r *ZoneResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		if handleClientError(&resp.Diagnostics, err) {
 			return
 		}
-
-		plan.Serial = types.StringValue(serial)
 	}
 
 	if handleClientError(&resp.Diagnostics, r.updateSettings(ctx, plan, state)) {
 		return
 	}
+
+	// The serial is computed and therefore unknown in the plan.
+	serial, err := r.zoneSerial(ctx, plan.Name.ValueString())
+	if handleClientError(&resp.Diagnostics, err) {
+		return
+	}
+	plan.Serial = types.StringValue(serial)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
