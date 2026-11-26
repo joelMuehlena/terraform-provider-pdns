@@ -34,6 +34,9 @@ type fakePDNS struct {
 	afterWrite func(f *fakePDNS, r *http.Request)
 	// reject, if set, makes requests it returns true for fail with 500.
 	reject func(r *http.Request) bool
+	// onPatch, if set, runs for every PATCH before the fake's mutex is taken,
+	// so tests can observe concurrent requests.
+	onPatch func(r *http.Request)
 }
 
 type fakeZone struct {
@@ -107,6 +110,10 @@ func (f *fakePDNS) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		if u, err := url.PathUnescape(s); err == nil {
 			segments[i] = u
 		}
+	}
+
+	if f.onPatch != nil && r.Method == http.MethodPatch {
+		f.onPatch(r)
 	}
 
 	f.mu.Lock()

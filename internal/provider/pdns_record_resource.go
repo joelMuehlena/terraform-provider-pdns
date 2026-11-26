@@ -158,7 +158,7 @@ func (r *RecordResource) Create(ctx context.Context, req resource.CreateRequest,
 		comments = make([]string, 0)
 	}
 
-	err := r.providerData.pdnsClient.UpdateZoneRecords(ctx, data.Zone.ValueString(), []pdns_client.Rrset{{
+	err := r.providerData.patchRecords(ctx, data.Zone.ValueString(), []pdns_client.Rrset{{
 		Type:       data.Type.ValueString(),
 		TTL:        data.TTL.ValueInt64(),
 		Changetype: "REPLACE",
@@ -284,7 +284,7 @@ func (r *RecordResource) Update(ctx context.Context, req resource.UpdateRequest,
 		comments = make([]string, 0)
 	}
 
-	err := r.providerData.pdnsClient.UpdateZoneRecords(ctx, plan.Zone.ValueString(), []pdns_client.Rrset{{
+	err := r.providerData.patchRecords(ctx, plan.Zone.ValueString(), []pdns_client.Rrset{{
 		Type:       plan.Type.ValueString(),
 		TTL:        plan.TTL.ValueInt64(),
 		Changetype: "REPLACE",
@@ -317,7 +317,7 @@ func (r *RecordResource) Delete(ctx context.Context, req resource.DeleteRequest,
 		return
 	}
 
-	err := r.providerData.pdnsClient.UpdateZoneRecords(ctx, data.Zone.ValueString(), []pdns_client.Rrset{{
+	err := r.providerData.patchRecords(ctx, data.Zone.ValueString(), []pdns_client.Rrset{{
 		Type:       data.Type.ValueString(),
 		Changetype: "DELETE",
 		Name:       fqdn(data.Name.ValueString(), data.Zone.ValueString()),

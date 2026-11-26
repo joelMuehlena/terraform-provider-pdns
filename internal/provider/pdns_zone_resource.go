@@ -671,7 +671,7 @@ func (r *ZoneResource) Update(ctx context.Context, req resource.UpdateRequest, r
 			"records": records,
 		})
 
-		err = r.providerData.pdnsClient.UpdateZoneRecords(ctx, plan.Name.ValueString(), records)
+		err = r.providerData.patchRecords(ctx, plan.Name.ValueString(), records)
 		if handleClientError(&resp.Diagnostics, err) {
 			return
 		}

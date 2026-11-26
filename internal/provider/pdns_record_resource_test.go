@@ -2,10 +2,13 @@ package provider
 
 import (
 	"fmt"
+	"net/http"
 	"os"
 	"regexp"
 	"slices"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
@@ -412,4 +415,56 @@ func TestReconcileRecords(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRecordResourceParallelChangesAreSerializedPerZone(t *testing.T) {
+	t.Parallel()
+	fake := newFakePDNS(t)
+	fake.addZone("example.test.")
+
+	// gpgsql deadlocks on concurrent PATCHes of one zone, so the provider must
+	// never send two at once, even with Terraform's default parallelism.
+	var inFlight, maxInFlight atomic.Int32
+	fake.onPatch = func(*http.Request) {
+		n := inFlight.Add(1)
+		defer inFlight.Add(-1)
+		for {
+			m := maxInFlight.Load()
+			if n <= m || maxInFlight.CompareAndSwap(m, n) {
+				break
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	config := fake.providerConfig()
+	for i := range 10 {
+		config += fmt.Sprintf(`
+resource "pdns_record" "r%[1]d" {
+  zone    = "example.test."
+  name    = "r%[1]d"
+  type    = "A"
+  records = ["10.0.0.%[2]d"]
+}
+`, i, i+1)
+	}
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		CheckDestroy: func(*terraform.State) error {
+			if got := maxInFlight.Load(); got != 1 {
+				return fmt.Errorf("up to %d PATCH requests to one zone ran concurrently, want 1", got)
+			}
+			return nil
+		},
+		Steps: []resource.TestStep{{
+			Config: config,
+			Check: func(*terraform.State) error {
+				if got := maxInFlight.Load(); got != 1 {
+					return fmt.Errorf("up to %d PATCH requests to one zone ran concurrently, want 1", got)
+				}
+				return nil
+			},
+		}},
+	})
 }

@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 )
@@ -234,16 +236,33 @@ func (client *PDNSClient) UpdateZoneMasters(ctx context.Context, zoneID string, 
 	return nil
 }
 
+// patchDeadlockRetries is how often UpdateZoneRecords retries a PATCH that
+// failed because of a database deadlock.
+const patchDeadlockRetries = 4
+
+// UpdateZoneRecords applies rrset changes to a zone. The gpgsql backend fails
+// concurrent PATCHes of the same zone with HTTP 500 "deadlock detected";
+// REPLACE and DELETE are idempotent, so such a PATCH is retried with backoff.
 func (client *PDNSClient) UpdateZoneRecords(ctx context.Context, zoneID string, rrsets []Rrset) error {
 	data, err := json.Marshal(PDNSZone{Rrsets: rrsets})
 	if err != nil {
 		return err
 	}
 
-	resp, err := client.do(ctx, http.MethodPatch, "zones/"+url.QueryEscape(zoneID), &PDNSZoneNotFoundError{ZoneID: zoneID}, bytes.NewReader(data), http.StatusNoContent)
-	if err != nil {
-		return err
+	for attempt := 0; ; attempt++ {
+		resp, err := client.do(ctx, http.MethodPatch, "zones/"+url.QueryEscape(zoneID), &PDNSZoneNotFoundError{ZoneID: zoneID}, bytes.NewReader(data), http.StatusNoContent)
+		if err == nil {
+			_ = resp.Body.Close()
+			return nil
+		}
+		if attempt >= patchDeadlockRetries || !strings.Contains(err.Error(), "deadlock detected") {
+			return err
+		}
+		tflog.Debug(ctx, "Retrying rrset PATCH after a database deadlock", map[string]any{"zone": zoneID, "attempt": attempt + 1})
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(attempt+1) * 100 * time.Millisecond):
+		}
 	}
-	_ = resp.Body.Close()
-	return nil
 }
