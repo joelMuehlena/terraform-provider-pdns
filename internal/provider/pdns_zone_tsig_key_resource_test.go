@@ -366,3 +366,54 @@ func TestZoneTSIGKeyApplyCancelled(t *testing.T) {
 		t.Fatal("expected context error")
 	}
 }
+
+// TestZoneTSIGKeyApplySameRunSettlesInParallel checks that writers of one run
+// (one PDNSProviderData, so one zone lock) do not hold the lock through the
+// settle delay: they wait for each other's writes only, not for each other's
+// delays, and still all end up in the lists.
+func TestZoneTSIGKeyApplySameRunSettlesInParallel(t *testing.T) {
+	t.Parallel()
+	fake := newFakePDNS(t)
+	fake.addZone("run.test.")
+
+	const writers = 8
+	const settle = 500 * time.Millisecond
+	for i := range writers {
+		fake.addKey(fmt.Sprintf("k%d", i), secretA)
+	}
+
+	data := newTestAttachment(fake).providerData
+	data.lockRetryConfig = &applyRetry{maxWrites: 8, settle: settle, backoff: jitteredBackoff}
+
+	start := time.Now()
+	var wg sync.WaitGroup
+	errs := make(chan error, writers+1)
+	for i := range writers {
+		wg.Go(func() {
+			r := &ZoneTSIGKeyResource{providerData: data, retryConfig: data.lockRetryConfig}
+			name := fmt.Sprintf("k%d", i)
+			errs <- r.apply(context.Background(), "run.test.", name+".", name, tsigPurposes{DNSUpdate: true, AXFR: true})
+		})
+	}
+	wg.Go(func() { errs <- data.setDNSUpdateLock(context.Background(), "run.test.", true) })
+	wg.Wait()
+	elapsed := time.Since(start)
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Holding the lock through the settle delay takes (writers+1) * settle.
+	if limit := 4 * settle; elapsed > limit {
+		t.Errorf("%d writers on one zone took %s, want less than %s", writers+1, elapsed, limit)
+	}
+	zone, _ := fake.zone("run.test.")
+	if got := len(zone.metadata[metadataDNSUpdate]); got != writers+1 || !containsDNSName(zone.metadata[metadataDNSUpdate], dnsupdateLockKey) {
+		t.Errorf("dnsupdate = %v, want %d keys and the lock", zone.metadata[metadataDNSUpdate], writers)
+	}
+	if len(zone.master) != writers {
+		t.Errorf("axfr = %v, want %d keys", zone.master, writers)
+	}
+}
