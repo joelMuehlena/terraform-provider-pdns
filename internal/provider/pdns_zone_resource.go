@@ -184,7 +184,10 @@ func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 					"signed by a key listed for the zone, for all zones and from the moment they exist, so this lock is not needed. " +
 					"Use the lock on 4.9 (which does not have the setting) or where the server configuration cannot be changed. " +
 					"The setting applies to every zone of the server; for per-zone control, also on 5.0+, leave `dnsupdate-require-tsig` " +
-					"off and set `lock_dnsupdate = true` only on the zones that must refuse unsigned updates. Defaults to `false`.",
+					"off and set `lock_dnsupdate = true` only on the zones that must refuse unsigned updates. " +
+					"The placeholder is not a real key: never create a TSIG key named `pdns-provider-dnsupdate-locked` outside the provider " +
+					"(with `pdnsutil` or the API), as it would be allowed to perform dynamic updates of every zone with `lock_dnsupdate = true`. " +
+					"Defaults to `false`.",
 				Optional: true,
 				Computed: true,
 				Default:  booldefault.StaticBool(false),

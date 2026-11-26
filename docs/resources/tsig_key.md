@@ -69,7 +69,7 @@ resource "pdns_tsig_key" "tenant_d" {
 
 ### Required
 
-- `name` (String) The name of the TSIG key. This is the key name clients (e.g. `nsupdate`, external-dns) must use. Changing it forces a new key.
+- `name` (String) The name of the TSIG key. This is the key name clients (e.g. `nsupdate`, external-dns) must use. Changing it forces a new key. The name `pdns-provider-dnsupdate-locked` is reserved for the placeholder of `lock_dnsupdate` (`pdns_zone`) and refused. Never create a key with that name outside the provider (with `pdnsutil` or the API) either: it would be allowed to perform dynamic updates of every zone with `lock_dnsupdate = true`.
 
 ### Optional
 
