@@ -28,3 +28,7 @@ run = "golangci-lint run ./..."
 description = "Format examples and regenerate docs"
 dir = "{{config_root}}/tools"
 run = "go generate ./..."
+
+[tasks.testacc]
+description = "Run acceptance tests against PowerDNS in docker (PDNS_VERSION, PDNS_BACKEND)"
+run = "test/acc/run.sh"

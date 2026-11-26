@@ -90,3 +90,28 @@ jobs:
             export TF_ACC_PROVIDER_HOST=registry.opentofu.org
           fi
           go test -race -count=1 -cover ./...
+
+  acceptance:
+    name: acceptance (pdns ${{ matrix.pdns }}, ${{ matrix.backend }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Each backend needs a test/acc/compose.<backend>.yml.
+        pdns: ["4.9", "5.0", "5.1"]
+        backend: [gsqlite3, gpgsql]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: "go.mod"
+          cache: true
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: "1.17.*"
+          terraform_wrapper: false
+      - name: Acceptance tests
+        env:
+          PDNS_VERSION: ${{ matrix.pdns }}
+          PDNS_BACKEND: ${{ matrix.backend }}
+        run: test/acc/run.sh -v

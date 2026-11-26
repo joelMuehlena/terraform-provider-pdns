@@ -1,0 +1,151 @@
+package provider
+
+import (
+	"context"
+	"fmt"
+	"slices"
+	"testing"
+
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
+	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	"github.com/samber/lo"
+	"gitlab.com/joelMuehlena/homelab/code/terraform/provider/terraform-provider-pdns/internal/pdns_client"
+)
+
+func accRecordConfig(env *accEnv, zone, body string) string {
+	return env.providerConfig() + fmt.Sprintf(`
+resource "pdns_record" "r" {
+  zone = %q
+  name = "www"
+%s
+}
+`, zone, body)
+}
+
+// checkRRset asserts one rrset of a zone on the server. A nil records list
+// asserts that the rrset does not exist.
+func (e *accEnv) checkRRset(zoneName, name, typ string, ttl int64, records, comments []string) func(*terraform.State) error {
+	return func(*terraform.State) error {
+		zone, err := e.zone(zoneName)
+		if err != nil {
+			return err
+		}
+		rr, ok := lo.Find(zone.Rrsets, func(rr pdns_client.Rrset) bool { return rr.Name == name && rr.Type == typ })
+		if records == nil {
+			if ok {
+				return fmt.Errorf("rrset %s %s still exists: %+v", typ, name, rr)
+			}
+			return nil
+		}
+		if !ok {
+			return fmt.Errorf("rrset %s %s does not exist", typ, name)
+		}
+		gotRecords := lo.Map(rr.Records, func(r pdns_client.Record, _ int) string { return r.Content })
+		gotComments := lo.Map(rr.Comments, func(c pdns_client.Comment, _ int) string { return c.Content })
+		slices.Sort(gotRecords)
+		if rr.TTL != ttl || !slices.Equal(gotRecords, records) || !slices.Equal(gotComments, comments) {
+			return fmt.Errorf("rrset = ttl %d records %v comments %v, want ttl %d records %v comments %v",
+				rr.TTL, gotRecords, gotComments, ttl, records, comments)
+		}
+		return nil
+	}
+}
+
+func TestAccRecordResource(t *testing.T) {
+	env := testAccPreCheck(t)
+	zone := env.createZone(t, "record")
+	www := "www." + zone
+
+	updated := accRecordConfig(env, zone, `
+  type     = "A"
+  ttl      = 60
+  records  = ["10.0.0.3"]
+  comments = ["managed by terraform"]`)
+
+	resource.ParallelTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		CheckDestroy:             env.checkRRset(zone, www, "A", 0, nil, nil),
+		Steps: []resource.TestStep{
+			{
+				Config: accRecordConfig(env, zone, `
+  type    = "A"
+  records = ["10.0.0.1", "10.0.0.2"]`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("pdns_record.r", "ttl", "1800"),
+					resource.TestCheckNoResourceAttr("pdns_record.r", "comments"),
+					env.checkRRset(zone, www, "A", 1800, []string{"10.0.0.1", "10.0.0.2"}, []string{}),
+				),
+			},
+			{
+				Config: updated,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction("pdns_record.r", plancheck.ResourceActionUpdate)},
+				},
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("pdns_record.r", "comments.0", "managed by terraform"),
+					env.checkRRset(zone, www, "A", 60, []string{"10.0.0.3"}, []string{"managed by terraform"}),
+				),
+			},
+			{
+				// Records changed out of band are restored.
+				PreConfig: func() {
+					err := env.client.UpdateZoneRecords(context.Background(), zone, []pdns_client.Rrset{{
+						Name: www, Type: "A", Changetype: "REPLACE", TTL: 60,
+						Records: []pdns_client.Record{{Content: "10.9.9.9"}},
+					}})
+					if err != nil {
+						t.Fatal(err)
+					}
+				},
+				Config: updated,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction("pdns_record.r", plancheck.ResourceActionUpdate)},
+				},
+				Check: env.checkRRset(zone, www, "A", 60, []string{"10.0.0.3"}, []string{"managed by terraform"}),
+			},
+			{
+				// Deleted out of band: removed from state and re-created.
+				PreConfig: func() {
+					err := env.client.UpdateZoneRecords(context.Background(), zone, []pdns_client.Rrset{{
+						Name: www, Type: "A", Changetype: "DELETE",
+					}})
+					if err != nil {
+						t.Fatal(err)
+					}
+				},
+				Config: updated,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction("pdns_record.r", plancheck.ResourceActionCreate)},
+				},
+				Check: env.checkRRset(zone, www, "A", 60, []string{"10.0.0.3"}, []string{"managed by terraform"}),
+			},
+			{
+				// Removed from the configuration: deleted on the server.
+				Config: env.providerConfig(),
+				Check:  env.checkRRset(zone, www, "A", 0, nil, nil),
+			},
+		},
+	})
+}
+
+func TestAccRecordResourceFullyQualifiedName(t *testing.T) {
+	env := testAccPreCheck(t)
+	zone := env.createZone(t, "fqdn")
+
+	resource.ParallelTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		CheckDestroy:             env.checkRRset(zone, "api."+zone, "CNAME", 0, nil, nil),
+		Steps: []resource.TestStep{{
+			Config: env.providerConfig() + fmt.Sprintf(`
+resource "pdns_record" "r" {
+  zone    = %[1]q
+  name    = "api.%[1]s"
+  type    = "CNAME"
+  records = ["www.%[1]s"]
+}
+`, zone),
+			Check: env.checkRRset(zone, "api."+zone, "CNAME", 1800, []string{"www." + zone}, []string{}),
+		}},
+	})
+}

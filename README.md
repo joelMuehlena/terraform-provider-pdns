@@ -81,4 +81,26 @@ mise run vet       # go vet
 mise run test      # unit tests
 mise run lint      # golangci-lint
 mise run generate  # format examples and regenerate docs
+mise run testacc   # acceptance tests against PowerDNS in docker
 ```
+
+### Acceptance tests
+
+The acceptance tests (`internal/provider/*_acc_test.go`, `TestAcc*`) run the
+resources against a real PowerDNS Authoritative server. They are skipped
+unless `TF_ACC=1`, `PDNS_ACC_ENDPOINT` and `PDNS_ACC_API_KEY` are set;
+`PDNS_ACC_DNS_ADDR` (host:port of the DNS listener) additionally enables the
+signed RFC2136 update test.
+
+`test/acc/run.sh` starts a server with docker compose, runs the tests and
+tears the server down:
+
+```sh
+mise run testacc                                   # PowerDNS 5.1, gsqlite3
+PDNS_VERSION=4.9 PDNS_BACKEND=gpgsql mise run testacc -- -v
+COMPOSE="podman compose" mise run testacc          # podman instead of docker
+```
+
+CI runs PowerDNS 4.9, 5.0 and 5.1, each with the `gsqlite3` and `gpgsql`
+backends. Another backend is one `test/acc/compose.<backend>.yml` (plus its
+config) and one matrix entry.
