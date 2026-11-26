@@ -150,6 +150,50 @@ resource "pdns_record" "r" {
 	})
 }
 
+func TestAccRecordResourceImport(t *testing.T) {
+	env := testAccPreCheck(t)
+	zone := env.createZone(t, "import")
+
+	config := env.providerConfig() + fmt.Sprintf(`
+resource "pdns_record" "relative" {
+  zone     = %[1]q
+  name     = "www"
+  type     = "AAAA"
+  ttl      = 60
+  records  = ["2345:425:2ca1::567:5673:23b5", "::1"]
+  comments = ["managed by terraform"]
+}
+
+resource "pdns_record" "fqdn" {
+  zone    = %[1]q
+  name    = "api.%[1]s"
+  type    = "CNAME"
+  records = ["www.%[1]s"]
+}
+`, zone)
+
+	resource.ParallelTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: config},
+			{
+				ResourceName:                         "pdns_record.relative",
+				ImportState:                          true,
+				ImportStateId:                        zone + ":www:AAAA",
+				ImportStateVerify:                    true,
+				ImportStateVerifyIdentifierAttribute: "name",
+			},
+			{
+				ResourceName:                         "pdns_record.fqdn",
+				ImportState:                          true,
+				ImportStateId:                        zone + ":api." + zone + ":CNAME",
+				ImportStateVerify:                    true,
+				ImportStateVerifyIdentifierAttribute: "name",
+			},
+		},
+	})
+}
+
 // Changing the type replaces the record and removes the rrset of the old type.
 func TestAccRecordResourceTypeChange(t *testing.T) {
 	env := testAccPreCheck(t)
