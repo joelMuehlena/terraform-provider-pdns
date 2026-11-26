@@ -215,6 +215,27 @@ func (client *PDNSClient) UpdateZoneSettings(ctx context.Context, zoneID, kind s
 	return nil
 }
 
+// UpdateZoneMasters replaces the primaries (masters) of a zone. nil or an
+// empty list removes all of them.
+func (client *PDNSClient) UpdateZoneMasters(ctx context.Context, zoneID string, masters []string) error {
+	if masters == nil {
+		masters = []string{}
+	}
+	data, err := json.Marshal(struct {
+		Masters []string `json:"masters"`
+	}{masters})
+	if err != nil {
+		return err
+	}
+
+	resp, err := client.do(ctx, http.MethodPut, "zones/"+url.QueryEscape(zoneID), &PDNSZoneNotFoundError{ZoneID: zoneID}, bytes.NewReader(data), http.StatusNoContent)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
 // patchDeadlockRetries is how often UpdateZoneRecords retries a PATCH that
 // failed because of a database deadlock.
 const patchDeadlockRetries = 4

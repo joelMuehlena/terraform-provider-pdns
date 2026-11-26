@@ -224,6 +224,16 @@ func TestZoneWrites(t *testing.T) {
 			wantBody:   `{"kind":"Native","dnssec":false}`,
 		},
 		{
+			name:   "clear masters",
+			status: http.StatusNoContent,
+			call: func(c *PDNSClient) error {
+				return c.UpdateZoneMasters(context.Background(), "example.com.", nil)
+			},
+			wantMethod: http.MethodPut,
+			wantPath:   "/api/v1/servers/localhost/zones/example.com.",
+			wantBody:   `{"masters":[]}`,
+		},
+		{
 			name:   "update records with comment",
 			status: http.StatusNoContent,
 			call: func(c *PDNSClient) error {
