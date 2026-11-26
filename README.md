@@ -93,6 +93,7 @@ By default PowerDNS only requires a TSIG signature for RFC2136 updates while a z
 
 - **PowerDNS 5.0 and later:** run the server with `dnsupdate-require-tsig=yes`. Updates must then be signed by a key listed for the zone. A zone without keys refuses all updates, including validly signed ones by other keys, from the moment it exists.
 - **PowerDNS 4.9**, or servers whose configuration you can't change: set `lock_dnsupdate = true` on `pdns_zone`. The zone keeps a placeholder key in `TSIG-ALLOW-DNSUPDATE`, and new zones are created as `Slave`, locked, then switched to their kind, so they are never unlocked. 4.9 doesn't know `dnsupdate-require-tsig` and refuses to start with it.
+  - The placeholder is named `pdns-provider-dnsupdate-locked`. `pdns_tsig_key` refuses that name, but nothing stops a key with it from being created outside the provider (`pdnsutil generate-tsig-key`, `pdnsutil import-tsig-key` or the API), and such a key could sign updates of **every** locked zone. Never create one, and check that `pdnsutil list-tsig-keys` doesn't list it.
 - **Per-zone control, also on 5.0+:** `dnsupdate-require-tsig` applies to every zone of the server. If some zones must keep accepting unsigned updates (from `allow-dnsupdate-from`) while others must not, leave the setting off and set `lock_dnsupdate = true` only on the zones that must refuse them.
 - In all cases, keep `allow-dnsupdate-from` as narrow as possible. The default is `127.0.0.0/8,::1`.
 

@@ -72,14 +72,17 @@ func (r *TSIGKeyResource) Schema(ctx context.Context, req resource.SchemaRequest
 				},
 			},
 			"name": schema.StringAttribute{
-				MarkdownDescription: "The name of the TSIG key. This is the key name clients (e.g. `nsupdate`, external-dns) must use. Changing it forces a new key.",
-				Required:            true,
+				MarkdownDescription: "The name of the TSIG key. This is the key name clients (e.g. `nsupdate`, external-dns) must use. Changing it forces a new key. " +
+					"The name `pdns-provider-dnsupdate-locked` is reserved for the placeholder of `lock_dnsupdate` (`pdns_zone`) and refused. " +
+					"Never create a key with that name outside the provider (with `pdnsutil` or the API) either: it would be allowed to " +
+					"perform dynamic updates of every zone with `lock_dnsupdate = true`.",
+				Required: true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
 				},
 				Validators: []validator.String{
 					stringvalidator.LengthAtLeast(1),
-					// Reserved: pdns_zone_tsig_key lists it to disable dynamic updates.
+					// Reserved: pdns_zone lists it to lock dynamic updates (lock_dnsupdate).
 					stringvalidator.NoneOfCaseInsensitive(dnsupdateLockKey, strings.TrimSuffix(dnsupdateLockKey, ".")),
 				},
 			},
