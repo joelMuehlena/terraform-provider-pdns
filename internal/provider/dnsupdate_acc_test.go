@@ -1,8 +1,10 @@
 package provider
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"slices"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -11,7 +13,8 @@ import (
 )
 
 // dnsUpdate sends an RFC2136 update adding an A record to the zone, signed
-// with the given TSIG key (hmac-sha256), and returns the response rcode.
+// with the given TSIG key (hmac-sha256), or unsigned if keyName is empty, and
+// returns the response rcode.
 func dnsUpdate(addr, zone, keyName, secret, owner, ip string) (int, error) {
 	rr, err := dns.NewRR(fmt.Sprintf("%s 60 IN A %s", owner, ip))
 	if err != nil {
@@ -20,9 +23,11 @@ func dnsUpdate(addr, zone, keyName, secret, owner, ip string) (int, error) {
 	msg := new(dns.Msg)
 	msg.SetUpdate(zone)
 	msg.Insert([]dns.RR{rr})
-	msg.SetTsig(dns.Fqdn(keyName), dns.HmacSHA256, 300, 0)
-
-	client := &dns.Client{Net: "tcp", TsigSecret: map[string]string{dns.Fqdn(keyName): secret}}
+	client := &dns.Client{Net: "tcp"}
+	if keyName != "" {
+		msg.SetTsig(dns.Fqdn(keyName), dns.HmacSHA256, 300, 0)
+		client.TsigSecret = map[string]string{dns.Fqdn(keyName): secret}
+	}
 	resp, _, err := client.Exchange(msg, addr)
 	if err != nil {
 		return 0, err
@@ -108,4 +113,97 @@ resource "pdns_zone_tsig_key" "other" {
 			},
 		},
 	})
+}
+
+// TestAccZoneDNSUpdateLock verifies end to end that a pdns_zone with the
+// default lock_dnsupdate = true refuses unsigned updates whether or not keys
+// are attached, and that lock_dnsupdate = false re-allows them.
+func TestAccZoneDNSUpdateLock(t *testing.T) {
+	env := testAccPreCheck(t)
+	env.dnsAddr = os.Getenv("PDNS_ACC_DNS_ADDR")
+	if env.dnsAddr == "" {
+		t.Skip("PDNS_ACC_DNS_ADDR is not set")
+	}
+	zone := env.zoneName(t, "lock")
+	key := env.keyName(t, "lock")
+
+	config := func(lock, attached bool) string {
+		c := env.providerConfig() + fmt.Sprintf(`
+resource "pdns_zone" "z" {
+  name           = %[1]q
+  lock_dnsupdate = %[4]t
+  nameservers    = [{ hostname = "ns1" }]
+  soa            = { rname = "hostmaster" }
+}
+
+resource "pdns_tsig_key" "k" {
+  name = %[2]q
+  key  = %[3]q
+}
+`, zone, key, secretA, lock)
+		if attached {
+			c += `
+resource "pdns_zone_tsig_key" "k" {
+  zone        = pdns_zone.z.name
+  tsig_key_id = pdns_tsig_key.k.id
+  dnsupdate   = true
+}
+`
+		}
+		return c
+	}
+
+	resource.ParallelTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		CheckDestroy:             env.checkZoneGone(zone),
+		Steps: []resource.TestStep{
+			{
+				// Locked from creation, before any key is attached.
+				Config: config(true, false),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					env.checkDNSUpdateList(zone, dnsupdateLockKey),
+					env.checkDNSUpdate(zone, "", "", "u1."+zone, false),
+				),
+			},
+			{
+				Config: config(true, true),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					env.checkDNSUpdateList(zone, dnsupdateLockKey, key),
+					env.checkDNSUpdate(zone, key, secretA, "s1."+zone, true),
+					env.checkDNSUpdate(zone, "", "", "u2."+zone, false),
+				),
+			},
+			{
+				// The last key is removed: still locked.
+				Config: config(true, false),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					env.checkDNSUpdateList(zone, dnsupdateLockKey),
+					env.checkDNSUpdate(zone, "", "", "u3."+zone, false),
+					env.checkDNSUpdate(zone, key, secretA, "s2."+zone, false),
+				),
+			},
+			{
+				// Explicit opt-out: unsigned updates are accepted again.
+				Config: config(false, false),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					env.checkDNSUpdateList(zone),
+					env.checkDNSUpdate(zone, "", "", "u4."+zone, true),
+				),
+			},
+		},
+	})
+}
+
+// checkDNSUpdateList asserts the zone's TSIG-ALLOW-DNSUPDATE on the server.
+func (e *accEnv) checkDNSUpdateList(zone string, want ...string) resource.TestCheckFunc {
+	return func(*terraform.State) error {
+		names, err := e.client.GetZoneMetadata(context.Background(), zone, metadataTSIGAllowDNSUpdate)
+		if err != nil {
+			return err
+		}
+		if got, want := normalizedNames(names), normalizedNames(want); !slices.Equal(got, want) {
+			return fmt.Errorf("zone %s dnsupdate list = %v, want %v", zone, got, want)
+		}
+		return nil
+	}
 }
