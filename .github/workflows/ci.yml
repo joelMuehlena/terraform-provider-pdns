@@ -46,16 +46,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # The 3 latest minor versions of each CLI.
         include:
-          # 1.11 is the minimum for write-only attributes.
-          - cli: terraform
-            version: "1.11.*"
-          - cli: terraform
-            version: "1.17.*"
-          - cli: tofu
-            version: "1.11.*"
-          - cli: tofu
-            version: "1.13.*"
+          - { cli: terraform, version: "1.15.*" }
+          - { cli: terraform, version: "1.16.*" }
+          - { cli: terraform, version: "1.17.*" }
+          - { cli: tofu, version: "1.11.*" }
+          - { cli: tofu, version: "1.12.*" }
+          - { cli: tofu, version: "1.13.*" }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
