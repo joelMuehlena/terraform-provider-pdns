@@ -1,7 +1,7 @@
 # Terraform / OpenTofu Provider for PowerDNS
 
 Manage [PowerDNS](https://www.powerdns.com/) Authoritative Server resources —
-zones and records — through its HTTP API using Terraform or OpenTofu.
+zones, records and TSIG keys — through its HTTP API using Terraform or OpenTofu.
 
 ## Requirements
 
@@ -58,6 +58,14 @@ resource "pdns_record" "www" {
 | `api_key`         | yes      | API key used for the `X-API-Key` header (sensitive).                        |
 | `server_id`       | no       | Server id. Defaults to `localhost`.                                         |
 | `skip_tls_verify` | no       | Skip verification of the remote's TLS certificate. Defaults to `false`.     |
+
+## Resources
+
+| Resource        | Description                                                                                   |
+| --------------- | --------------------------------------------------------------------------------------------- |
+| `pdns_zone`     | A zone including its SOA and NS records.                                                      |
+| `pdns_record`   | A single rrset within a zone.                                                                 |
+| `pdns_tsig_key` | A TSIG key. The secret is set via `key` or the write-only `key_wo` (Terraform/OpenTofu >= 1.11). |
 
 See the [`docs/`](./docs) directory for the full resource reference.
 

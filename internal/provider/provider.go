@@ -103,6 +103,7 @@ func (p *PDNSProvider) Resources(ctx context.Context) []func() resource.Resource
 	return []func() resource.Resource{
 		NewZoneResource,
 		NewRecordResource,
+		NewTSIGKeyResource,
 	}
 }
 
