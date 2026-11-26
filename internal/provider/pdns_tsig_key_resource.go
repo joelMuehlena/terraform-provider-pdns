@@ -59,7 +59,10 @@ func (r *TSIGKeyResource) Schema(ctx context.Context, req resource.SchemaRequest
 	resp.Schema = schema.Schema{
 		MarkdownDescription: "Manages a PowerDNS TSIG key. The secret is supplied either through `key` (stored in state) " +
 			"or through the write-only `key_wo` (never stored in state or plan; requires Terraform >= 1.11 or OpenTofu >= 1.11). " +
-			"Attach the key to zones with `pdns_zone_tsig_key`.",
+			"Attach the key to zones with `pdns_zone_tsig_key`.\n\n" +
+			"**Note:** with the `gpgsql` backend before PowerDNS 5.1, changing the secret of an existing key fails with HTTP 500, " +
+			"because the default `gpgsql-set-tsig-key-query` is a plain `INSERT`. Use PowerDNS >= 5.1 or set the query to the 5.1 default: " +
+			"`insert into tsigkeys (name,algorithm,secret) values($1,$2,$3) on conflict(name,algorithm) do update set secret=Excluded.secret`.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				MarkdownDescription: "The PowerDNS ID of the TSIG key (usually the name with a trailing dot). Use this to attach the key to zones.",
