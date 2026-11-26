@@ -12,7 +12,9 @@ func Diff(a, b []Nameserver) ([]Nameserver, []Nameserver) {
 	// Find added or changed items
 	for _, ns := range a {
 		oldNs, exists := oldState[ns.Hostname]
-		if !exists || oldNs.Address != ns.Address {
+		// Compare addresses by value: plan and state are decoded separately,
+		// so equal addresses never share a pointer.
+		if !exists || !equalAddress(oldNs.Address, ns.Address) {
 			// If not in old state, or if any value has changed
 			addedOrChanged = append(addedOrChanged, ns)
 		}
@@ -25,4 +27,11 @@ func Diff(a, b []Nameserver) ([]Nameserver, []Nameserver) {
 	}
 
 	return addedOrChanged, deleted
+}
+
+func equalAddress(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
