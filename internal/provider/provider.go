@@ -26,6 +26,9 @@ type PDNSProviderData struct {
 	// zoneLocks serializes read-modify-write cycles on per-zone settings
 	// (e.g. TSIG key lists) across resources applied in parallel.
 	zoneLocks sync.Map
+	// lockRetryConfig overrides defaultApplyRetry for setDNSUpdateLock; nil in
+	// normal use.
+	lockRetryConfig *applyRetry
 }
 
 // lockZone locks the given zone for exclusive modification and returns the

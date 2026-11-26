@@ -21,17 +21,33 @@ func (d *PDNSProviderData) hasDNSUpdateLock(ctx context.Context, zone string) (b
 }
 
 // setDNSUpdateLock adds or removes the lock placeholder, leaving the keys of
-// pdns_zone_tsig_key attachments untouched.
+// pdns_zone_tsig_key attachments untouched. Like the attachments it verifies
+// the result and retries, so a concurrent writer that rewrites the list from a
+// stale read (e.g. another run removing the last attachment) cannot silently
+// drop the placeholder.
 func (d *PDNSProviderData) setDNSUpdateLock(ctx context.Context, zone string, lock bool) error {
 	unlock := d.lockZone(zone)
 	defer unlock()
 
-	names, err := d.pdnsClient.GetZoneMetadata(ctx, zone, metadataTSIGAllowDNSUpdate)
-	if err != nil {
-		return err
+	return retryWrites(ctx, d.lockRetry(), "TSIG-ALLOW-DNSUPDATE of zone "+zone,
+		func(ctx context.Context) (bool, error) {
+			locked, err := d.hasDNSUpdateLock(ctx, zone)
+			return locked == lock, err
+		},
+		func(ctx context.Context) error {
+			names, err := d.pdnsClient.GetZoneMetadata(ctx, zone, metadataTSIGAllowDNSUpdate)
+			if err != nil {
+				return err
+			}
+			return d.pdnsClient.SetZoneMetadata(ctx, zone, metadataTSIGAllowDNSUpdate, setDNSName(names, dnsupdateLockKey, lock))
+		},
+	)
+}
+
+// lockRetry returns the retry settings for setDNSUpdateLock.
+func (d *PDNSProviderData) lockRetry() applyRetry {
+	if d.lockRetryConfig != nil {
+		return *d.lockRetryConfig
 	}
-	if containsDNSName(names, dnsupdateLockKey) == lock {
-		return nil
-	}
-	return d.pdnsClient.SetZoneMetadata(ctx, zone, metadataTSIGAllowDNSUpdate, setDNSName(names, dnsupdateLockKey, lock))
+	return defaultApplyRetry
 }

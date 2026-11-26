@@ -390,23 +390,41 @@ func (r *ZoneTSIGKeyResource) retry() applyRetry {
 }
 
 // apply brings the zone's TSIG lists in line with want for the given key.
-// Lists are read-modify-written, so after each write the zone is re-read and
-// the write retried if another writer interfered. Once the zone matches, it
-// is re-checked after a short settle delay to catch writes still in flight.
 // Callers must hold the zone lock to serialize writers within this process.
 func (r *ZoneTSIGKeyResource) apply(ctx context.Context, zone, keyID, keyName string, want tsigPurposes) error {
-	retry := r.retry()
+	var current tsigPurposes
+	return retryWrites(ctx, r.retry(), "TSIG key lists of zone "+zone,
+		func(ctx context.Context) (bool, error) {
+			state, err := r.load(ctx, zone)
+			if err != nil {
+				return false, err
+			}
+			current = state.purposesFor(keyID, keyName)
+			return current == want, nil
+		},
+		func(ctx context.Context) error {
+			return r.write(ctx, zone, keyID, keyName, current, want)
+		},
+	)
+}
+
+// retryWrites runs write until check reports the desired state. Zone-wide
+// lists are read-modify-written and PowerDNS has no atomic add/remove, so
+// writers in other processes can overwrite each other: after every write the
+// state is checked again and the write retried (with backoff) if another
+// writer interfered. Once it matches, it is re-checked after a settle delay to
+// catch writes still in flight.
+func retryWrites(ctx context.Context, retry applyRetry, what string, check func(context.Context) (bool, error), write func(context.Context) error) error {
 	writes := 0
 	settled := false
 
 	for {
-		state, err := r.load(ctx, zone)
+		done, err := check(ctx)
 		if err != nil {
 			return err
 		}
-		current := state.purposesFor(keyID, keyName)
 
-		if current == want {
+		if done {
 			if writes == 0 || settled {
 				return nil
 			}
@@ -418,7 +436,7 @@ func (r *ZoneTSIGKeyResource) apply(ctx context.Context, zone, keyID, keyName st
 		}
 
 		if writes >= retry.maxWrites {
-			return fmt.Errorf("TSIG key lists of zone %s were modified concurrently; gave up after %d attempts", zone, writes)
+			return fmt.Errorf("%s were modified concurrently; gave up after %d attempts", what, writes)
 		}
 		if writes > 0 {
 			if err := sleepCtx(ctx, retry.backoff(writes)); err != nil {
@@ -428,7 +446,7 @@ func (r *ZoneTSIGKeyResource) apply(ctx context.Context, zone, keyID, keyName st
 		writes++
 		settled = false
 
-		if err := r.write(ctx, zone, keyID, keyName, current, want); err != nil {
+		if err := write(ctx); err != nil {
 			return err
 		}
 	}
