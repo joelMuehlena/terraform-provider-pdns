@@ -75,7 +75,7 @@ Required:
 
 Optional:
 
-- `address` (String) The IP Address of the nameserver
+- `address` (String) The IP Address of the nameserver. The provider manages it as the A (IPv4) or AAAA (IPv6) record at the hostname, holding exactly this address. If that record is changed, extended or removed outside of Terraform, the next plan shows the difference and the apply restores it.
 
 
 <a id="nestedatt--soa"></a>

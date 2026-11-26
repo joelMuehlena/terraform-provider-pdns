@@ -244,6 +244,57 @@ func TestZoneResourceFullyQualifiedNames(t *testing.T) {
 	})
 }
 
+// setGlue replaces the A rrset at name in the fake zone; no contents removes it.
+func setGlue(fake *fakePDNS, zoneName, name string, contents ...string) {
+	fake.mutate(func(f *fakePDNS) {
+		z := f.zones[fakeKey(zoneName)]
+		z.rrsets = slices.DeleteFunc(z.rrsets, func(rr pdns_client.Rrset) bool { return rr.Name == name && rr.Type == "A" })
+		if len(contents) > 0 {
+			z.rrsets = append(z.rrsets, pdns_client.Rrset{Name: name, Type: "A", Records: lo.Map(contents, func(c string, _ int) pdns_client.Record {
+				return pdns_client.Record{Content: c}
+			})})
+		}
+	})
+}
+
+func TestZoneResourceNameserverAddressDrift(t *testing.T) {
+	t.Parallel()
+	fake := newFakePDNS(t)
+	config := zoneConfig(fake, `
+  nameservers = [
+    { hostname = "ns1", address = "10.0.0.1" },
+    { hostname = "ns2", address = "10.0.0.2" },
+  ]
+  soa = { rname = "hostmaster" }`)
+	want := checkRRsets(fake, "example.test.",
+		"SOA example.test. ns1.example.test. hostmaster.example.test. SERIAL 86400 7200 4000000 11200",
+		"A ns1.example.test. 10.0.0.1",
+		"A ns2.example.test. 10.0.0.2",
+	)
+	driftStep := func(mutate func()) resource.TestStep {
+		return resource.TestStep{
+			PreConfig: mutate,
+			Config:    config,
+			ConfigPlanChecks: resource.ConfigPlanChecks{
+				PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction("pdns_zone.z", plancheck.ResourceActionUpdate)},
+			},
+			Check: want,
+		}
+	}
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: config, Check: want},
+			// Changed, removed or extended out of band: refresh reports the
+			// drift and the apply restores the glue record.
+			driftStep(func() { setGlue(fake, "example.test.", "ns2.example.test.", "10.0.0.9") }),
+			driftStep(func() { setGlue(fake, "example.test.", "ns2.example.test.") }),
+			driftStep(func() { setGlue(fake, "example.test.", "ns1.example.test.", "10.0.0.1", "10.0.0.8") }),
+		},
+	})
+}
+
 func TestZoneResourceErrors(t *testing.T) {
 	t.Parallel()
 

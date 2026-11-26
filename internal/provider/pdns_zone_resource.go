@@ -152,7 +152,7 @@ func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 						},
 						"address": schema.StringAttribute{
 							Optional:    true,
-							Description: "The IP Address of the nameserver",
+							Description: "The IP Address of the nameserver. The provider manages it as the A (IPv4) or AAAA (IPv6) record at the hostname, holding exactly this address. If that record is changed, extended or removed outside of Terraform, the next plan shows the difference and the apply restores it.",
 							Validators: []validator.String{
 								stringvalidator.RegexMatches(IP_REGEX, "The passed string is not a valid IPv4 or valid IPv6 Address"),
 							},
@@ -715,59 +715,73 @@ var nameserverAttrTypes = map[string]attr.Type{
 	"hostname": types.StringType,
 }
 
-// readNameservers maps the configured nameservers to their current state,
-// using the A/AAAA records of the zone for nameservers with an address.
+// readNameservers maps the configured nameservers to their current state.
+// Hostnames keep their configured spelling. For a nameserver with an address,
+// the address is read from the A or AAAA rrset at its hostname (see
+// readAddress), so a glue record changed or removed out of band shows as a
+// diff instead of failing the refresh. Nameservers without an address keep
+// it unset, even if such a record exists: it is not managed by the provider.
 func readNameservers(zone pdns_client.PDNSZone, current []Nameserver) (types.List, diag.Diagnostics) {
-	var diags diag.Diagnostics
+	listType := types.ObjectType{AttrTypes: nameserverAttrTypes}
+	elements := make([]attr.Value, 0, len(current))
 
-	elements := lo.FilterMap(current, func(item Nameserver, index int) (attr.Value, bool) {
-		ns := fqdn(item.Hostname, zone.Name)
+	for _, item := range current {
+		address := item.Address
+		if address != nil {
+			address = readAddress(zone, fqdn(item.Hostname, zone.Name), *address)
+		}
 
-		nsRecord, isFound := lo.Find(zone.Rrsets, func(itemRset pdns_client.Rrset) bool {
-			if len(itemRset.Records) == 0 || item.Address == nil {
-				return false
-			}
-			return (itemRset.Type == "A" || itemRset.Type == "AAAA") &&
-				itemRset.Name == ns &&
-				itemRset.Records[0].Content == *item.Address
+		objValue, diags := types.ObjectValue(nameserverAttrTypes, map[string]attr.Value{
+			"address":  types.StringPointerValue(address),
+			"hostname": types.StringValue(item.Hostname),
 		})
-
-		var nsData map[string]attr.Value
-
-		switch {
-		case !isFound && item.Address != nil:
-			diags.AddError("Read error", fmt.Sprintf("Failed to read A or AAAA record for NS record (%s)", item.Hostname))
-			return nil, false
-		case !isFound:
-			nsData = map[string]attr.Value{
-				"address":  types.StringPointerValue(item.Address),
-				"hostname": types.StringValue(item.Hostname),
-			}
-		default:
-			// The record was looked up by the configured hostname, so keep
-			// its spelling (relative or fully qualified).
-			nsData = map[string]attr.Value{
-				"address":  types.StringValue(nsRecord.Records[0].Content),
-				"hostname": types.StringValue(item.Hostname),
-			}
+		if diags.HasError() {
+			return types.ListNull(listType), diags
 		}
-
-		objValue, objDiags := types.ObjectValue(nameserverAttrTypes, nsData)
-		diags.Append(objDiags...)
-		if objDiags.HasError() {
-			return nil, false
-		}
-
-		return objValue, true
-	})
-
-	if diags.HasError() {
-		return types.ListNull(types.ObjectType{AttrTypes: nameserverAttrTypes}), diags
+		elements = append(elements, objValue)
 	}
 
-	listValue, listDiags := types.ListValue(types.ObjectType{AttrTypes: nameserverAttrTypes}, elements)
-	diags.Append(listDiags...)
-	return listValue, diags
+	return types.ListValue(listType, elements)
+}
+
+// addressRecords returns the contents of the rrset of the given type (A or
+// AAAA) at name.
+func addressRecords(zone pdns_client.PDNSZone, name, recordType string) []string {
+	rrset, _ := lo.Find(zone.Rrsets, func(rr pdns_client.Rrset) bool {
+		return rr.Type == recordType && sameDNSName(rr.Name, name)
+	})
+	return lo.Map(rrset.Records, func(r pdns_client.Record, _ int) string { return r.Content })
+}
+
+// readAddress returns the current address of a nameserver whose address is
+// configured as configured. The provider writes the rrset of the address's
+// type (A or AAAA) with exactly that one record, so:
+//   - if that rrset holds only the configured address (compared as IP, so
+//     different spellings of an IPv6 address match), configured is returned;
+//   - if it holds other or additional records, the first record that differs
+//     is returned, so the apply replaces the rrset with the configured address;
+//   - if there is none, the first record of the other type is returned, if any;
+//   - with no A or AAAA record at all, nil is returned (the glue record is
+//     missing and is re-created on apply).
+func readAddress(zone pdns_client.PDNSZone, hostname, configured string) *string {
+	recordType, ok := addressRecordType(configured)
+	if !ok {
+		return &configured
+	}
+	sameIP := func(address string) bool { return net.ParseIP(address).Equal(net.ParseIP(configured)) }
+
+	if records := addressRecords(zone, hostname, recordType); len(records) > 0 {
+		if differing, found := lo.Find(records, func(r string) bool { return !sameIP(r) }); found {
+			return &differing
+		}
+		return &configured
+	}
+
+	otherType := lo.Ternary(recordType == "A", "AAAA", "A")
+	if records := addressRecords(zone, hostname, otherType); len(records) > 0 {
+		return &records[0]
+	}
+	return nil
 }
 
 // addressRecordType returns "A" or "AAAA" for an IP address, or false if the
