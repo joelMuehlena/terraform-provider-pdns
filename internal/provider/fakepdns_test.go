@@ -222,6 +222,10 @@ func (f *fakePDNS) updateZone(w http.ResponseWriter, r *http.Request, zone *fake
 			writeError(w, http.StatusBadRequest, err.Error())
 			return false
 		}
+		if field == "slave_tsig_key_ids" && len(ids) > 1 {
+			writeError(w, http.StatusUnprocessableEntity, "Only one TSIG secondary key is currently allowed")
+			return false
+		}
 		for _, id := range ids {
 			if _, ok := f.keys[fakeKey(id)]; !ok {
 				writeError(w, http.StatusUnprocessableEntity, "A TSIG key with the name '"+strings.TrimSuffix(id, ".")+"' does not exist")

@@ -4,11 +4,14 @@ page_title: "pdns_tsig_key Resource - pdns"
 subcategory: ""
 description: |-
   Manages a PowerDNS TSIG key. The secret is supplied either through key (stored in state) or through the write-only key_wo (never stored in state or plan; requires Terraform >= 1.11 or OpenTofu >= 1.11). Attach the key to zones with pdns_zone_tsig_key.
+  Note: with the gpgsql backend before PowerDNS 5.1, changing the secret of an existing key fails with HTTP 500, because the default gpgsql-set-tsig-key-query is a plain INSERT. Use PowerDNS >= 5.1 or set the query to the 5.1 default: insert into tsigkeys (name,algorithm,secret) values($1,$2,$3) on conflict(name,algorithm) do update set secret=Excluded.secret.
 ---
 
 # pdns_tsig_key (Resource)
 
 Manages a PowerDNS TSIG key. The secret is supplied either through `key` (stored in state) or through the write-only `key_wo` (never stored in state or plan; requires Terraform >= 1.11 or OpenTofu >= 1.11). Attach the key to zones with `pdns_zone_tsig_key`.
+
+**Note:** with the `gpgsql` backend before PowerDNS 5.1, changing the secret of an existing key fails with HTTP 500, because the default `gpgsql-set-tsig-key-query` is a plain `INSERT`. Use PowerDNS >= 5.1 or set the query to the 5.1 default: `insert into tsigkeys (name,algorithm,secret) values($1,$2,$3) on conflict(name,algorithm) do update set secret=Excluded.secret`.
 
 ## Example Usage
 
