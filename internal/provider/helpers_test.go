@@ -197,7 +197,7 @@ func TestDNSNameLists(t *testing.T) {
 func TestSOAModelFromRecord(t *testing.T) {
 	t.Parallel()
 
-	soa, err := soaModelFromRecord("ns1.example.com. hostmaster.example.com. 2024010101 10800 3600 604800 300", "example.com.", true)
+	soa, err := soaModelFromRecord("ns1.example.com. hostmaster.example.com. 2024010101 10800 3600 604800 300", "example.com.", "hostmaster", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,8 +214,48 @@ func TestSOAModelFromRecord(t *testing.T) {
 	}
 
 	for _, bad := range []string{"ns1. host. 1 2 3", "ns1. host. 1 x 3 4 5", ""} {
-		if _, err := soaModelFromRecord(bad, "example.com.", true); err == nil {
+		if _, err := soaModelFromRecord(bad, "example.com.", "hostmaster", true); err == nil {
 			t.Errorf("soaModelFromRecord(%q) expected error", bad)
+		}
+	}
+
+	rnames := []struct{ server, configured, want string }{
+		// A fully qualified rname inside the zone keeps its spelling.
+		{"hostmaster.example.com.", "hostmaster.example.com.", "hostmaster.example.com."},
+		// Changed on the server: the server value shows the drift.
+		{"admin.example.com.", "hostmaster.example.com.", "admin"},
+		// Names that only contain the zone name are not mangled.
+		{"hostmaster.example.com.other.org.", "hostmaster.example.com.other.org.", "hostmaster.example.com.other.org."},
+		{"hostmaster.example.com.other.org.", "hostmaster", "hostmaster.example.com.other.org."},
+	}
+	for _, tt := range rnames {
+		soa, err := soaModelFromRecord("ns1.example.com. "+tt.server+" 1 2 3 4 5", "example.com.", tt.configured, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := soa.RName.ValueString(); got != tt.want {
+			t.Errorf("rname of %q configured as %q = %q, want %q", tt.server, tt.configured, got, tt.want)
+		}
+	}
+}
+
+func TestReadName(t *testing.T) {
+	t.Parallel()
+	tests := []struct{ server, configured, want string }{
+		{"ns1.example.com.", "ns1", "ns1"},
+		{"ns1.example.com.", "ns1.example.com.", "ns1.example.com."},
+		{"NS1.Example.com.", "ns1.example.com.", "ns1.example.com."},
+		{"ns2.example.com.", "ns1.example.com.", "ns2"},
+		{"ns2.example.com.", "", "ns2"},
+		{"ns.other.org.", "ns.other.org.", "ns.other.org."},
+		{"ns.other.org.", "ns1", "ns.other.org."},
+		{"a.example.com.other.org.", "", "a.example.com.other.org."},
+		{"ns1.notexample.com.", "", "ns1.notexample.com."},
+		{"example.com.", "", "example.com."},
+	}
+	for _, tt := range tests {
+		if got := readName(tt.server, tt.configured, "example.com."); got != tt.want {
+			t.Errorf("readName(%q, %q) = %q, want %q", tt.server, tt.configured, got, tt.want)
 		}
 	}
 }
@@ -307,7 +347,7 @@ func TestReadNameservers(t *testing.T) {
 
 	list, diags := readNameservers(zone, []Nameserver{
 		{Hostname: "ns1", Address: new("10.0.0.1")},
-		{Hostname: "ns2", Address: new("2001:db8::2")},
+		{Hostname: "ns2.example.com.", Address: new("2001:db8::2")},
 		{Hostname: "ns3"},
 	})
 	if diags.HasError() {
@@ -318,8 +358,9 @@ func TestReadNameservers(t *testing.T) {
 	if diags := list.ElementsAs(context.Background(), &got, false); diags.HasError() {
 		t.Fatal(diags)
 	}
+	// Hostnames keep their configured spelling.
 	if len(got) != 3 || got[0].Hostname != "ns1" || *got[0].Address != "10.0.0.1" ||
-		got[1].Hostname != "ns2" || *got[1].Address != "2001:db8::2" ||
+		got[1].Hostname != "ns2.example.com." || *got[1].Address != "2001:db8::2" ||
 		got[2].Hostname != "ns3" || got[2].Address != nil {
 		t.Errorf("unexpected nameservers: %+v", got)
 	}

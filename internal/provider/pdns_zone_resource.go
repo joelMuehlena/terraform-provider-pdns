@@ -469,7 +469,7 @@ func (r *ZoneResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	// provider; PowerDNS creates a default one that must not be read back
 	// into the configured soa values.
 	if isFound && currentSoaData.CreateRecord {
-		soa, err := soaModelFromRecord(soaRecord.Records[0].Content, zone.Name, currentSoaData.CreateRecord)
+		soa, err := soaModelFromRecord(soaRecord.Records[0].Content, zone.Name, currentSoaData.RName, currentSoaData.CreateRecord)
 		if err != nil {
 			resp.Diagnostics.AddError("Parsing Error", fmt.Sprintf("Failed to read SOA record: %s", err))
 			return
@@ -654,8 +654,10 @@ func soaRrset(soa SOA, primaryNS, zoneName, serial string) pdns_client.Rrset {
 }
 
 // soaModelFromRecord parses the content of a SOA record
-// ("mname rname serial refresh retry expire ttl") into a SOAModel.
-func soaModelFromRecord(content, zoneName string, createRecord bool) (SOAModel, error) {
+// ("mname rname serial refresh retry expire ttl") into a SOAModel. The rname
+// keeps the configured spelling while it names the same address (see
+// readName).
+func soaModelFromRecord(content, zoneName, configuredRName string, createRecord bool) (SOAModel, error) {
 	fields := strings.Split(content, " ")
 	if len(fields) < 7 {
 		return SOAModel{}, fmt.Errorf("SOA record %q has %d fields, expected 7", content, len(fields))
@@ -671,13 +673,37 @@ func soaModelFromRecord(content, zoneName string, createRecord bool) (SOAModel, 
 	}
 
 	return SOAModel{
-		RName:        types.StringValue(strings.ReplaceAll(fields[1], "."+zoneName, "")),
+		RName:        types.StringValue(readName(fields[1], configuredRName, zoneName)),
 		Refresh:      types.Int64Value(numbers[0]),
 		Retry:        types.Int64Value(numbers[1]),
 		Expire:       types.Int64Value(numbers[2]),
 		TTL:          types.Int64Value(numbers[3]),
 		CreateRecord: types.BoolValue(createRecord),
 	}, nil
+}
+
+// relativeName returns name relative to zone when it lies inside the zone,
+// the spelling the provider accepts for names in the zone, and the fully
+// qualified name otherwise. Only a suffix is removed, so names that merely
+// contain the zone name elsewhere are kept intact.
+func relativeName(name, zone string) string {
+	suffix := "." + zone
+	if len(name) > len(suffix) && strings.EqualFold(name[len(name)-len(suffix):], suffix) {
+		return name[:len(name)-len(suffix)]
+	}
+	return name
+}
+
+// readName returns the name to store for a server value that was configured
+// as configured. While both name the same domain, the configured spelling is
+// kept, so "hostmaster" and "hostmaster.example.com." do not cause a diff;
+// otherwise the server value (relative to the zone if inside it) shows the
+// drift.
+func readName(server, configured, zone string) string {
+	if configured != "" && sameDNSName(server, fqdn(configured, zone)) {
+		return configured
+	}
+	return relativeName(server, zone)
 }
 
 var nameserverAttrTypes = map[string]attr.Type{
@@ -714,9 +740,11 @@ func readNameservers(zone pdns_client.PDNSZone, current []Nameserver) (types.Lis
 				"hostname": types.StringValue(item.Hostname),
 			}
 		default:
+			// The record was looked up by the configured hostname, so keep
+			// its spelling (relative or fully qualified).
 			nsData = map[string]attr.Value{
 				"address":  types.StringValue(nsRecord.Records[0].Content),
-				"hostname": types.StringValue(strings.ReplaceAll(nsRecord.Name, "."+zone.Name, "")),
+				"hostname": types.StringValue(item.Hostname),
 			}
 		}
 
