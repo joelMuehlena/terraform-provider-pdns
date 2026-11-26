@@ -150,6 +150,38 @@ resource "pdns_record" "r" {
 	})
 }
 
+// Changing the type replaces the record and removes the rrset of the old type.
+func TestAccRecordResourceTypeChange(t *testing.T) {
+	env := testAccPreCheck(t)
+	zone := env.createZone(t, "typechange")
+	www := "www." + zone
+
+	resource.ParallelTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		CheckDestroy:             env.checkRRset(zone, www, "AAAA", 0, nil, nil),
+		Steps: []resource.TestStep{
+			{
+				Config: accRecordConfig(env, zone, `
+  type    = "A"
+  records = ["10.0.0.1"]`),
+				Check: env.checkRRset(zone, www, "A", 1800, []string{"10.0.0.1"}, []string{}),
+			},
+			{
+				Config: accRecordConfig(env, zone, `
+  type    = "AAAA"
+  records = ["::1"]`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction("pdns_record.r", plancheck.ResourceActionDestroyBeforeCreate)},
+				},
+				Check: resource.ComposeAggregateTestCheckFunc(
+					env.checkRRset(zone, www, "AAAA", 1800, []string{"::1"}, []string{}),
+					env.checkRRset(zone, www, "A", 0, nil, nil),
+				),
+			},
+		},
+	})
+}
+
 // PowerDNS returns records sorted and in canonical form. Records configured in
 // another order or spelling must converge, while a change on the server must
 // still be detected.

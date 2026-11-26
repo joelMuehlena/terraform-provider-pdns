@@ -250,6 +250,44 @@ resource "pdns_record" "mx" {
 	})
 }
 
+// Changing the type replaces the rrset: the rrset of the old type must not be
+// left behind on the server.
+func TestRecordResourceTypeChange(t *testing.T) {
+	t.Parallel()
+	fake := newFakePDNS(t)
+	fake.addZone("example.test.")
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: recordConfig(fake, `
+  type    = "A"
+  records = ["10.0.0.1"]`),
+				Check: checkFakeRRset(fake, "www.example.test.", "A", 1800, []string{"10.0.0.1"}, nil),
+			},
+			{
+				Config: recordConfig(fake, `
+  type    = "AAAA"
+  records = ["::1"]`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction("pdns_record.r", plancheck.ResourceActionDestroyBeforeCreate)},
+				},
+				Check: resource.ComposeAggregateTestCheckFunc(
+					checkFakeRRset(fake, "www.example.test.", "AAAA", 1800, []string{"::1"}, nil),
+					func(*terraform.State) error {
+						zone, _ := fake.zone("example.test.")
+						if rr, ok := zone.rrset("www.example.test.", "A"); ok {
+							return fmt.Errorf("rrset of the old type still exists: %+v", rr)
+						}
+						return nil
+					},
+				),
+			},
+		},
+	})
+}
+
 func TestReconcileRecords(t *testing.T) {
 	t.Parallel()
 
