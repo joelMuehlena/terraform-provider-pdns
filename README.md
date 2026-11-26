@@ -118,6 +118,12 @@ COMPOSE="podman compose" mise run testacc          # podman instead of docker
 PDNS_ACC_SERVER_ARGS=--dnsupdate-require-tsig=yes mise run testacc  # extra server flags
 ```
 
+The PowerDNS and PostgreSQL images are pinned to exact versions in
+`test/acc/images/*.Dockerfile` (version manifests read by `run.sh`, never
+built). Dependabot proposes updates for them; to bump one by hand, edit its
+`FROM` line. `PDNS_IMAGE` overrides the image for one run, e.g.
+`PDNS_IMAGE=docker.io/powerdns/pdns-auth-51:latest`.
+
 `TestAccDNSUpdateRequireTSIG` only runs against a server with
 `dnsupdate-require-tsig=yes` (PowerDNS 5.0+). See `test/acc/run.sh` for all
 settings, e.g. the ports and the compose project name.
