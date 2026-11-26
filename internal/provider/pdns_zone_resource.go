@@ -310,24 +310,7 @@ func createZoneFromData(ctx context.Context, data ZoneResourceModel) (pdns_clien
 
 	serial := time.Now().Format("20060102") + "01"
 	if soa.CreateRecord {
-		records = append(records, pdns_client.Rrset{
-			Type: "SOA",
-			Name: name,
-			Records: []pdns_client.Record{
-				{
-					Content: fmt.Sprintf(
-						"%s %s %s %d %d %d %d",
-						nameservers[0].Hostname,
-						soa.RName,
-						serial,
-						soa.Refresh,
-						soa.Retry,
-						soa.Expire,
-						soa.TTL,
-					),
-				},
-			},
-		})
+		records = append(records, soaRrset(soa, nameservers[0].Hostname, name, serial))
 	}
 
 	for index, nameserver := range nameservers {
@@ -398,32 +381,6 @@ func (r *ZoneResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	})
 
 	if isFound {
-		soaData := strings.Split(soaRecord.Records[0].Content, " ")
-
-		refresh, err := strconv.ParseInt(soaData[3], 10, 64)
-		if err != nil {
-			resp.Diagnostics.AddError("Parsing Error", fmt.Sprintf("Failed to parse SOA number: %s", err.Error()))
-			return
-		}
-
-		retry, err := strconv.ParseInt(soaData[4], 10, 64)
-		if err != nil {
-			resp.Diagnostics.AddError("Parsing Error", fmt.Sprintf("Failed to parse SOA number: %s", err.Error()))
-			return
-		}
-
-		expire, err := strconv.ParseInt(soaData[5], 10, 64)
-		if err != nil {
-			resp.Diagnostics.AddError("Parsing Error", fmt.Sprintf("Failed to parse SOA number: %s", err.Error()))
-			return
-		}
-
-		ttl, err := strconv.ParseInt(soaData[6], 10, 64)
-		if err != nil {
-			resp.Diagnostics.AddError("Parsing Error", fmt.Sprintf("Failed to parse SOA number: %s", err.Error()))
-			return
-		}
-
 		var currentSoaData SOA
 		diags := data.SOA.As(ctx, &currentSoaData, basetypes.ObjectAsOptions{})
 		if diags.HasError() {
@@ -431,13 +388,10 @@ func (r *ZoneResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 			return
 		}
 
-		soa := SOAModel{
-			RName:        types.StringValue(strings.ReplaceAll(soaData[1], "."+zone.Name, "")),
-			Refresh:      types.Int64Value(refresh),
-			Retry:        types.Int64Value(retry),
-			Expire:       types.Int64Value(expire),
-			TTL:          types.Int64Value(ttl),
-			CreateRecord: types.BoolValue(currentSoaData.CreateRecord),
+		soa, err := soaModelFromRecord(soaRecord.Records[0].Content, zone.Name, currentSoaData.CreateRecord)
+		if err != nil {
+			resp.Diagnostics.AddError("Parsing Error", fmt.Sprintf("Failed to read SOA record: %s", err))
+			return
 		}
 
 		objectValue, diags := types.ObjectValueFrom(ctx, soa.AttributeTypes(), soa)
@@ -456,56 +410,9 @@ func (r *ZoneResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 		return
 	}
 
-	nsDataTypes := map[string]attr.Type{
-		"address":  types.StringType,
-		"hostname": types.StringType,
-	}
-
-	elements := lo.FilterMap(currentNameservers, func(item Nameserver, index int) (attr.Value, bool) {
-		ns := fqdn(item.Hostname, zone.Name)
-
-		nsRecord, isFound := lo.Find(zone.Rrsets, func(itemRset pdns_client.Rrset) bool {
-			if len(itemRset.Records) == 0 || item.Address == nil {
-				return false
-			}
-			return (itemRset.Type == "A" || itemRset.Type == "AAAA") &&
-				itemRset.Name == ns &&
-				itemRset.Records[0].Content == *item.Address
-		})
-
-		var nsData map[string]attr.Value
-
-		if !isFound && item.Address != nil {
-			resp.Diagnostics.AddError("Read error", fmt.Sprintf("Failed to read A or AAAA record for NS record (%s)", item.Hostname))
-			return nil, false
-		} else if !isFound && item.Address == nil {
-			nsData = map[string]attr.Value{
-				"address":  types.StringPointerValue(item.Address),
-				"hostname": types.StringValue(item.Hostname),
-			}
-		} else {
-			nsData = map[string]attr.Value{
-				"address":  types.StringValue(nsRecord.Records[0].Content),
-				"hostname": types.StringValue(strings.ReplaceAll(nsRecord.Name, "."+zone.Name, "")),
-			}
-		}
-
-		objValue, diags := types.ObjectValue(nsDataTypes, nsData)
-		if diags.HasError() {
-			resp.Diagnostics.Append(diags...)
-			return nil, false
-		}
-
-		return objValue, true
-	})
-
+	listValue, diags := readNameservers(zone, currentNameservers)
+	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
-		return
-	}
-
-	listValue, diags := types.ListValue(types.ObjectType{AttrTypes: nsDataTypes}, elements)
-	if diags.HasError() {
-		resp.Diagnostics = append(resp.Diagnostics, diags...)
 		return
 	}
 
@@ -551,67 +458,12 @@ func (r *ZoneResource) Update(ctx context.Context, req resource.UpdateRequest, r
 
 		tflog.Info(ctx, "DBG", map[string]any{"added": addedOrChanged, "del": deleted})
 
-		for i, nameserver := range addedOrChanged {
-			var recordType string
-			if nameserver.Address == nil {
-				tflog.Info(ctx, "Skipping nameserver A or AAAA record, because Address is not set.", map[string]any{"path": path.Root("nameservers[" + strconv.Itoa(i) + "]").String()})
-				continue
-			}
-			parsedIP := net.ParseIP(*nameserver.Address)
-			if parsedIP == nil {
-				resp.Diagnostics.AddAttributeError(path.Root("nameservers["+strconv.Itoa(i)+"]"), "Parse Error", "Found invalid IPv4 or IPv6 address")
-				return
-			}
-
-			if parsedIP.To4() != nil {
-				recordType = "A"
-			} else {
-				recordType = "AAAA"
-			}
-
-			changeType := "REPLACE"
-			if nameserver.Address == nil {
-				changeType = "DELETE"
-			}
-
-			records = append(records, pdns_client.Rrset{
-				Type:       recordType,
-				Changetype: changeType,
-				Name:       fqdn(nameserver.Hostname, plan.Name.ValueString()),
-				Records: []pdns_client.Record{
-					{
-						Content: *nameserver.Address,
-					},
-				},
-			})
+		nsRecords, diags := nameserverRecordChanges(ctx, addedOrChanged, deleted, plan.Name.ValueString())
+		resp.Diagnostics.Append(diags...)
+		if resp.Diagnostics.HasError() {
+			return
 		}
-
-		for i, nameserver := range deleted {
-			var recordType string
-
-			if nameserver.Address == nil {
-				resp.Diagnostics.AddAttributeError(path.Root("nameservers["+strconv.Itoa(i)+"]"), "Parse Error", "Address in removed nameserver is null")
-				return
-			}
-
-			parsedIP := net.ParseIP(*nameserver.Address)
-			if parsedIP == nil {
-				resp.Diagnostics.AddAttributeError(path.Root("nameservers["+strconv.Itoa(i)+"]"), "Parse Error", "Found invalid IPv4 or IPv6 address")
-				return
-			}
-
-			if parsedIP.To4() != nil {
-				recordType = "A"
-			} else {
-				recordType = "AAAA"
-			}
-
-			records = append(records, pdns_client.Rrset{
-				Type:       recordType,
-				Changetype: "DELETE",
-				Name:       fqdn(nameserver.Hostname, plan.Name.ValueString()),
-			})
-		}
+		records = append(records, nsRecords...)
 
 		records = append(records, pdns_client.Rrset{
 			Type:       "NS",
@@ -625,7 +477,6 @@ func (r *ZoneResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		})
 
 		if !state.SOA.Equal(plan.SOA) || (len(plan.Nameservers.Elements()) >= 1 && len(state.Nameservers.Elements()) == 0) || !state.Nameservers.Elements()[0].Equal(plan.Nameservers.Elements()[0]) {
-
 			var newSoaData SOA
 			diags = plan.SOA.As(ctx, &newSoaData, basetypes.ObjectAsOptions{})
 			if diags.HasError() {
@@ -633,28 +484,9 @@ func (r *ZoneResource) Update(ctx context.Context, req resource.UpdateRequest, r
 				return
 			}
 
-			nameserver := fqdn(newNameservers[0].Hostname, plan.Name.ValueString())
-			rname := fqdn(newSoaData.RName, plan.Name.ValueString())
-
-			records = append(records, pdns_client.Rrset{
-				Type:       "SOA",
-				Name:       plan.Name.ValueString(),
-				Changetype: "REPLACE",
-				Records: []pdns_client.Record{
-					{
-						Content: fmt.Sprintf(
-							"%s %s %s %d %d %d %d",
-							nameserver,
-							rname,
-							serial,
-							newSoaData.Refresh,
-							newSoaData.Retry,
-							newSoaData.Expire,
-							newSoaData.TTL,
-						),
-					},
-				},
-			})
+			soaRecord := soaRrset(newSoaData, fqdn(newNameservers[0].Hostname, plan.Name.ValueString()), plan.Name.ValueString(), serial)
+			soaRecord.Changetype = "REPLACE"
+			records = append(records, soaRecord)
 		}
 
 		tflog.Debug(ctx, "Updating records", map[string]any{
@@ -701,4 +533,177 @@ func (r *ZoneResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 // TODO: Import zone by name
 func (r *ZoneResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("name"), req, resp)
+}
+
+// soaRrset builds the SOA rrset of a zone. primaryNS and soa.RName must
+// already be fully qualified.
+func soaRrset(soa SOA, primaryNS, zoneName, serial string) pdns_client.Rrset {
+	return pdns_client.Rrset{
+		Type: "SOA",
+		Name: zoneName,
+		Records: []pdns_client.Record{
+			{
+				Content: fmt.Sprintf(
+					"%s %s %s %d %d %d %d",
+					primaryNS,
+					fqdn(soa.RName, zoneName),
+					serial,
+					soa.Refresh,
+					soa.Retry,
+					soa.Expire,
+					soa.TTL,
+				),
+			},
+		},
+	}
+}
+
+// soaModelFromRecord parses the content of a SOA record
+// ("mname rname serial refresh retry expire ttl") into a SOAModel.
+func soaModelFromRecord(content, zoneName string, createRecord bool) (SOAModel, error) {
+	fields := strings.Split(content, " ")
+	if len(fields) < 7 {
+		return SOAModel{}, fmt.Errorf("SOA record %q has %d fields, expected 7", content, len(fields))
+	}
+
+	numbers := make([]int64, 0, 4)
+	for _, field := range fields[3:7] {
+		n, err := strconv.ParseInt(field, 10, 64)
+		if err != nil {
+			return SOAModel{}, fmt.Errorf("failed to parse SOA number: %w", err)
+		}
+		numbers = append(numbers, n)
+	}
+
+	return SOAModel{
+		RName:        types.StringValue(strings.ReplaceAll(fields[1], "."+zoneName, "")),
+		Refresh:      types.Int64Value(numbers[0]),
+		Retry:        types.Int64Value(numbers[1]),
+		Expire:       types.Int64Value(numbers[2]),
+		TTL:          types.Int64Value(numbers[3]),
+		CreateRecord: types.BoolValue(createRecord),
+	}, nil
+}
+
+var nameserverAttrTypes = map[string]attr.Type{
+	"address":  types.StringType,
+	"hostname": types.StringType,
+}
+
+// readNameservers maps the configured nameservers to their current state,
+// using the A/AAAA records of the zone for nameservers with an address.
+func readNameservers(zone pdns_client.PDNSZone, current []Nameserver) (types.List, diag.Diagnostics) {
+	var diags diag.Diagnostics
+
+	elements := lo.FilterMap(current, func(item Nameserver, index int) (attr.Value, bool) {
+		ns := fqdn(item.Hostname, zone.Name)
+
+		nsRecord, isFound := lo.Find(zone.Rrsets, func(itemRset pdns_client.Rrset) bool {
+			if len(itemRset.Records) == 0 || item.Address == nil {
+				return false
+			}
+			return (itemRset.Type == "A" || itemRset.Type == "AAAA") &&
+				itemRset.Name == ns &&
+				itemRset.Records[0].Content == *item.Address
+		})
+
+		var nsData map[string]attr.Value
+
+		switch {
+		case !isFound && item.Address != nil:
+			diags.AddError("Read error", fmt.Sprintf("Failed to read A or AAAA record for NS record (%s)", item.Hostname))
+			return nil, false
+		case !isFound:
+			nsData = map[string]attr.Value{
+				"address":  types.StringPointerValue(item.Address),
+				"hostname": types.StringValue(item.Hostname),
+			}
+		default:
+			nsData = map[string]attr.Value{
+				"address":  types.StringValue(nsRecord.Records[0].Content),
+				"hostname": types.StringValue(strings.ReplaceAll(nsRecord.Name, "."+zone.Name, "")),
+			}
+		}
+
+		objValue, objDiags := types.ObjectValue(nameserverAttrTypes, nsData)
+		diags.Append(objDiags...)
+		if objDiags.HasError() {
+			return nil, false
+		}
+
+		return objValue, true
+	})
+
+	if diags.HasError() {
+		return types.ListNull(types.ObjectType{AttrTypes: nameserverAttrTypes}), diags
+	}
+
+	listValue, listDiags := types.ListValue(types.ObjectType{AttrTypes: nameserverAttrTypes}, elements)
+	diags.Append(listDiags...)
+	return listValue, diags
+}
+
+// addressRecordType returns "A" or "AAAA" for an IP address, or false if the
+// address is not a valid IP.
+func addressRecordType(address string) (string, bool) {
+	ip := net.ParseIP(address)
+	if ip == nil {
+		return "", false
+	}
+	if ip.To4() != nil {
+		return "A", true
+	}
+	return "AAAA", true
+}
+
+// nameserverRecordChanges builds the A/AAAA rrset changes for added or changed
+// and for removed nameservers.
+func nameserverRecordChanges(ctx context.Context, addedOrChanged, deleted []Nameserver, zoneName string) ([]pdns_client.Rrset, diag.Diagnostics) {
+	var diags diag.Diagnostics
+	records := make([]pdns_client.Rrset, 0, len(addedOrChanged)+len(deleted))
+
+	for i, nameserver := range addedOrChanged {
+		if nameserver.Address == nil {
+			tflog.Info(ctx, "Skipping nameserver A or AAAA record, because Address is not set.", map[string]any{"path": path.Root("nameservers[" + strconv.Itoa(i) + "]").String()})
+			continue
+		}
+
+		recordType, ok := addressRecordType(*nameserver.Address)
+		if !ok {
+			diags.AddAttributeError(path.Root("nameservers["+strconv.Itoa(i)+"]"), "Parse Error", "Found invalid IPv4 or IPv6 address")
+			return nil, diags
+		}
+
+		records = append(records, pdns_client.Rrset{
+			Type:       recordType,
+			Changetype: "REPLACE",
+			Name:       fqdn(nameserver.Hostname, zoneName),
+			Records: []pdns_client.Record{
+				{
+					Content: *nameserver.Address,
+				},
+			},
+		})
+	}
+
+	for i, nameserver := range deleted {
+		if nameserver.Address == nil {
+			diags.AddAttributeError(path.Root("nameservers["+strconv.Itoa(i)+"]"), "Parse Error", "Address in removed nameserver is null")
+			return nil, diags
+		}
+
+		recordType, ok := addressRecordType(*nameserver.Address)
+		if !ok {
+			diags.AddAttributeError(path.Root("nameservers["+strconv.Itoa(i)+"]"), "Parse Error", "Found invalid IPv4 or IPv6 address")
+			return nil, diags
+		}
+
+		records = append(records, pdns_client.Rrset{
+			Type:       recordType,
+			Changetype: "DELETE",
+			Name:       fqdn(nameserver.Hostname, zoneName),
+		})
+	}
+
+	return records, diags
 }

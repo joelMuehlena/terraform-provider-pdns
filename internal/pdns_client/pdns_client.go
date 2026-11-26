@@ -87,7 +87,7 @@ func (client *PDNSClient) getReq(ctx context.Context, method string, apiPath str
 		return nil, err
 	}
 
-	tflog.Debug(ctx, "Constructed HTTP Request for PDNS API", map[string]interface{}{
+	tflog.Debug(ctx, "Constructed HTTP Request for PDNS API", map[string]any{
 		"url":     req.URL,
 		"headers": req.Header,
 		"method":  req.Method,
