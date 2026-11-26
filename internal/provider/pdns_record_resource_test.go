@@ -2,6 +2,7 @@ package provider
 
 import (
 	"fmt"
+	"os"
 	"regexp"
 	"slices"
 	"testing"
@@ -344,6 +345,41 @@ resource "pdns_record" "fqdn" {
 				ExpectError:   regexp.MustCompile(`Expected an import ID of the form <zone>/<name>/<type>`),
 			},
 		},
+	})
+}
+
+// The documented example applies, converges, and creates the records only
+// after their zone.
+func TestRecordResourceExample(t *testing.T) {
+	t.Parallel()
+	example, err := os.ReadFile("../../examples/resources/pdns_record/resource.tf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := newFakePDNS(t)
+
+	dependsOnZone := func(name string) resource.TestCheckFunc {
+		return func(s *terraform.State) error {
+			rs, ok := s.RootModule().Resources[name]
+			if !ok {
+				return fmt.Errorf("%s not in state", name)
+			}
+			if !slices.Contains(rs.Dependencies, "pdns_zone.example_com") {
+				return fmt.Errorf("%s does not depend on pdns_zone.example_com, dependencies: %v", name, rs.Dependencies)
+			}
+			return nil
+		}
+	}
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []resource.TestStep{{
+			Config: fake.providerConfig() + string(example),
+			Check: resource.ComposeAggregateTestCheckFunc(
+				dependsOnZone("pdns_record.test_aaaa"),
+				dependsOnZone("pdns_record.test2_a"),
+			),
+		}},
 	})
 }
 

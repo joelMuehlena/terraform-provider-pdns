@@ -41,7 +41,7 @@ resource "pdns_zone" "example_com" {
 }
 
 resource "pdns_record" "test_aaaa" {
-  zone = "example.com."
+  zone = pdns_zone.example_com.name
 
   name = "test"
 
