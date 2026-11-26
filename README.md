@@ -73,6 +73,7 @@ See the [`docs/`](./docs) directory for the full resource reference.
 ## Development
 
 ```sh
+make test      # unit tests (needs a terraform or tofu binary on PATH)
 make lint      # golangci-lint
 make generate  # regenerate docs (requires tfplugindocs)
 go build ./...
