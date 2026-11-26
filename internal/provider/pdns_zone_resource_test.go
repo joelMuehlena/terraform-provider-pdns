@@ -170,6 +170,42 @@ func TestZoneResource(t *testing.T) {
 	})
 }
 
+func TestZoneResourceNameserverGlue(t *testing.T) {
+	t.Parallel()
+	fake := newFakePDNS(t)
+	soa := "SOA example.test. ns1.example.test. hostmaster.example.test. SERIAL 86400 7200 4000000 11200"
+	config := func(nameservers string) string {
+		return zoneConfig(fake, `
+  nameservers = [`+nameservers+`]
+  soa         = { rname = "hostmaster" }`)
+	}
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: config(`{ hostname = "ns1", address = "10.0.0.1" }, { hostname = "ns2" }, { hostname = "ns3", address = "10.0.0.3" }`),
+				Check:  checkRRsets(fake, "example.test.", soa, "A ns1.example.test. 10.0.0.1", "A ns3.example.test. 10.0.0.3"),
+			},
+			{
+				// Removing a nameserver without address: no glue to delete.
+				Config: config(`{ hostname = "ns1", address = "10.0.0.1" }, { hostname = "ns3", address = "10.0.0.3" }`),
+				Check:  checkRRsets(fake, "example.test.", soa, "A ns1.example.test. 10.0.0.1", "A ns3.example.test. 10.0.0.3"),
+			},
+			{
+				// Removing the address deletes the glue record.
+				Config: config(`{ hostname = "ns1", address = "10.0.0.1" }, { hostname = "ns3" }`),
+				Check:  checkRRsets(fake, "example.test.", soa, "A ns1.example.test. 10.0.0.1"),
+			},
+			{
+				// Changing the address family replaces the A by an AAAA record.
+				Config: config(`{ hostname = "ns1", address = "2001:db8::1" }, { hostname = "ns3" }`),
+				Check:  checkRRsets(fake, "example.test.", soa, "AAAA ns1.example.test. 2001:db8::1"),
+			},
+		},
+	})
+}
+
 func TestZoneResourceWithoutSOARecord(t *testing.T) {
 	t.Parallel()
 	fake := newFakePDNS(t)
