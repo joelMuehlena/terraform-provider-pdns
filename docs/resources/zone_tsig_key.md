@@ -5,6 +5,7 @@ subcategory: ""
 description: |-
   Attaches a TSIG key to a zone. A key can be attached to many zones and a zone can have many keys; use exactly one pdns_zone_tsig_key per zone and key pair, and enable one or more purposes on it.
   dnsupdate only takes effect when the PowerDNS server runs with dnsupdate=yes; the source addresses allowed to send updates are controlled by the allow-dnsupdate-from setting (or the ALLOW-DNSUPDATE-FROM zone metadata).
+  Concurrency: PowerDNS stores the TSIG keys of a zone as one list per purpose and has no atomic add or remove, so every change rewrites the whole list. Changes within one run are serialized. Across parallel runs, each change is re-read, retried on conflict and re-checked after one second. This is not a guarantee: to rule out lost or reappearing entries, serialize applies that touch the same zone.
 ---
 
 # pdns_zone_tsig_key (Resource)
@@ -12,6 +13,8 @@ description: |-
 Attaches a TSIG key to a zone. A key can be attached to many zones and a zone can have many keys; use exactly one `pdns_zone_tsig_key` per zone and key pair, and enable one or more purposes on it.
 
 `dnsupdate` only takes effect when the PowerDNS server runs with `dnsupdate=yes`; the source addresses allowed to send updates are controlled by the `allow-dnsupdate-from` setting (or the `ALLOW-DNSUPDATE-FROM` zone metadata).
+
+**Concurrency:** PowerDNS stores the TSIG keys of a zone as one list per purpose and has no atomic add or remove, so every change rewrites the whole list. Changes within one run are serialized. Across parallel runs, each change is re-read, retried on conflict and re-checked after one second. This is not a guarantee: to rule out lost or reappearing entries, serialize applies that touch the same zone.
 
 ## Example Usage
 

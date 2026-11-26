@@ -3,8 +3,10 @@ package provider
 import (
 	"context"
 	"fmt"
+	"math/rand/v2"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -90,7 +92,11 @@ func (r *ZoneTSIGKeyResource) Schema(ctx context.Context, req resource.SchemaReq
 		MarkdownDescription: "Attaches a TSIG key to a zone. A key can be attached to many zones and a zone can have many keys; " +
 			"use exactly one `pdns_zone_tsig_key` per zone and key pair, and enable one or more purposes on it.\n\n" +
 			"`dnsupdate` only takes effect when the PowerDNS server runs with `dnsupdate=yes`; the source addresses allowed to send " +
-			"updates are controlled by the `allow-dnsupdate-from` setting (or the `ALLOW-DNSUPDATE-FROM` zone metadata).",
+			"updates are controlled by the `allow-dnsupdate-from` setting (or the `ALLOW-DNSUPDATE-FROM` zone metadata).\n\n" +
+			"**Concurrency:** PowerDNS stores the TSIG keys of a zone as one list per purpose and has no atomic add or remove, so every " +
+			"change rewrites the whole list. Changes within one run are serialized. Across parallel runs, each change is re-read, " +
+			"retried on conflict and re-checked after one second. This is not a guarantee: to rule out lost or reappearing entries, " +
+			"serialize applies that touch the same zone.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				MarkdownDescription: "Identifier of the attachment in the form `<zone>/<tsig_key_id>`.",
@@ -346,37 +352,102 @@ func (r *ZoneTSIGKeyResource) load(ctx context.Context, zone string) (zoneTSIGSt
 	}, nil
 }
 
-// apply brings the zone's TSIG lists in line with want for the given key,
-// writing only the lists that actually change. Callers must hold the zone
-// lock, as this is a read-modify-write of zone-wide lists.
-func (r *ZoneTSIGKeyResource) apply(ctx context.Context, zone, keyID, keyName string, want tsigPurposes) error {
-	state, err := r.load(ctx, zone)
-	if err != nil {
-		return err
-	}
-	current := state.purposesFor(keyID, keyName)
+// Retry tuning for apply. PowerDNS has no atomic add/remove for the zone TSIG
+// lists, so concurrent writers (e.g. separate runs) can overwrite each other.
+const (
+	applyMaxWrites = 8
+	applySettle    = time.Second
+)
 
-	var master, slave *[]string
-	if current.AXFR != want.AXFR {
-		master = lo.ToPtr(setDNSName(state.masterIDs, keyID, want.AXFR))
+// apply brings the zone's TSIG lists in line with want for the given key.
+// Lists are read-modify-written, so after each write the zone is re-read and
+// the write retried if another writer interfered. Once the zone matches, it
+// is re-checked after a short settle delay to catch writes still in flight.
+// Callers must hold the zone lock to serialize writers within this process.
+func (r *ZoneTSIGKeyResource) apply(ctx context.Context, zone, keyID, keyName string, want tsigPurposes) error {
+	writes := 0
+	settled := false
+
+	for {
+		state, err := r.load(ctx, zone)
+		if err != nil {
+			return err
+		}
+		current := state.purposesFor(keyID, keyName)
+
+		if current == want {
+			if writes == 0 || settled {
+				return nil
+			}
+			settled = true
+			if err := sleepCtx(ctx, applySettle); err != nil {
+				return err
+			}
+			continue
+		}
+
+		if writes >= applyMaxWrites {
+			return fmt.Errorf("TSIG key lists of zone %s were modified concurrently; gave up after %d attempts", zone, writes)
+		}
+		if writes > 0 {
+			// Jittered linear backoff: 50-250ms per attempt.
+			if err := sleepCtx(ctx, time.Duration(writes)*time.Duration(50+rand.IntN(200))*time.Millisecond); err != nil {
+				return err
+			}
+		}
+		writes++
+		settled = false
+
+		if err := r.write(ctx, zone, keyID, keyName, current, want); err != nil {
+			return err
+		}
 	}
-	if current.Secondary != want.Secondary {
-		slave = lo.ToPtr(setDNSName(state.slaveIDs, keyID, want.Secondary))
-	}
-	if master != nil || slave != nil {
-		if err := r.providerData.pdnsClient.UpdateZoneTSIGKeyIDs(ctx, zone, master, slave); err != nil {
+}
+
+// write performs one read-modify-write per list that differs from want. Each
+// list is re-read right before it is written to keep the race window small.
+func (r *ZoneTSIGKeyResource) write(ctx context.Context, zone, keyID, keyName string, current, want tsigPurposes) error {
+	client := r.providerData.pdnsClient
+
+	if current.AXFR != want.AXFR || current.Secondary != want.Secondary {
+		z, err := client.GetZone(ctx, zone, false, "")
+		if err != nil {
+			return err
+		}
+		var master, slave *[]string
+		if current.AXFR != want.AXFR {
+			master = lo.ToPtr(setDNSName(z.MasterTsigKeyIDS, keyID, want.AXFR))
+		}
+		if current.Secondary != want.Secondary {
+			slave = lo.ToPtr(setDNSName(z.SlaveTsigKeyIDS, keyID, want.Secondary))
+		}
+		if err := client.UpdateZoneTSIGKeyIDs(ctx, zone, master, slave); err != nil {
 			return err
 		}
 	}
 
 	if current.DNSUpdate != want.DNSUpdate {
-		names := setDNSName(state.dnsupdateNames, keyName, want.DNSUpdate)
-		if err := r.providerData.pdnsClient.SetZoneMetadata(ctx, zone, metadataTSIGAllowDNSUpdate, names); err != nil {
+		names, err := client.GetZoneMetadata(ctx, zone, metadataTSIGAllowDNSUpdate)
+		if err != nil {
+			return err
+		}
+		if err := client.SetZoneMetadata(ctx, zone, metadataTSIGAllowDNSUpdate, setDNSName(names, keyName, want.DNSUpdate)); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
 
 func containsDNSName(list []string, name string) bool {
