@@ -365,9 +365,47 @@ func TestReadNameservers(t *testing.T) {
 		t.Errorf("unexpected nameservers: %+v", got)
 	}
 
-	// A configured address without a matching record is an error.
-	if _, diags := readNameservers(zone, []Nameserver{{Hostname: "ns1", Address: new("10.0.0.99")}}); !diags.HasError() {
-		t.Error("expected error for missing address record")
+	// A changed address is read back as drift instead of failing.
+	list, diags = readNameservers(zone, []Nameserver{{Hostname: "ns1", Address: new("10.0.0.99")}})
+	if diags.HasError() {
+		t.Fatal(diags)
+	}
+	if diags := list.ElementsAs(context.Background(), &got, false); diags.HasError() {
+		t.Fatal(diags)
+	}
+	if len(got) != 1 || got[0].Address == nil || *got[0].Address != "10.0.0.1" {
+		t.Errorf("changed address: unexpected nameservers: %+v", got)
+	}
+}
+
+func TestReadAddress(t *testing.T) {
+	t.Parallel()
+	rrset := func(typ, name string, contents ...string) pdns_client.Rrset {
+		return pdns_client.Rrset{Type: typ, Name: name, Records: lo.Map(contents, func(c string, _ int) pdns_client.Record { return pdns_client.Record{Content: c} })}
+	}
+	tests := map[string]struct {
+		rrsets     []pdns_client.Rrset
+		configured string
+		want       *string
+	}{
+		"unchanged":         {[]pdns_client.Rrset{rrset("A", "ns1.example.com.", "10.0.0.1")}, "10.0.0.1", new("10.0.0.1")},
+		"changed":           {[]pdns_client.Rrset{rrset("A", "ns1.example.com.", "10.0.0.2")}, "10.0.0.1", new("10.0.0.2")},
+		"missing":           {[]pdns_client.Rrset{rrset("A", "ns2.example.com.", "10.0.0.1")}, "10.0.0.1", nil},
+		"empty rrset":       {[]pdns_client.Rrset{rrset("A", "ns1.example.com.")}, "10.0.0.1", nil},
+		"additional record": {[]pdns_client.Rrset{rrset("A", "ns1.example.com.", "10.0.0.1", "10.0.0.3")}, "10.0.0.1", new("10.0.0.3")},
+		"other type":        {[]pdns_client.Rrset{rrset("AAAA", "ns1.example.com.", "2001:db8::1")}, "10.0.0.1", new("2001:db8::1")},
+		"other type ignored": {[]pdns_client.Rrset{
+			rrset("A", "ns1.example.com.", "10.0.0.1"),
+			rrset("AAAA", "ns1.example.com.", "2001:db8::1"),
+		}, "10.0.0.1", new("10.0.0.1")},
+		"ipv6 spelling": {[]pdns_client.Rrset{rrset("AAAA", "ns1.example.com.", "2001:db8::1")}, "2001:0db8:0::1", new("2001:0db8:0::1")},
+		"name case":     {[]pdns_client.Rrset{rrset("A", "NS1.example.com.", "10.0.0.1")}, "10.0.0.1", new("10.0.0.1")},
+	}
+	for name, tt := range tests {
+		got := readAddress(pdns_client.PDNSZone{Name: "example.com.", Rrsets: tt.rrsets}, "ns1.example.com.", tt.configured)
+		if (got == nil) != (tt.want == nil) || (got != nil && *got != *tt.want) {
+			t.Errorf("%s: readAddress = %v, want %v", name, lo.FromPtr(got), lo.FromPtr(tt.want))
+		}
 	}
 }
 

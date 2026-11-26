@@ -1,12 +1,15 @@
 package provider
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	"github.com/samber/lo"
+	"gitlab.com/joelMuehlena/homelab/code/terraform/provider/terraform-provider-pdns/internal/pdns_client"
 )
 
 func accZoneConfig(env *accEnv, name, body string) string {
@@ -164,5 +167,83 @@ func TestAccZoneResourceWithoutSOARecord(t *testing.T) {
 				env.checkZoneSettings(name, "Native", false),
 			),
 		}},
+	})
+}
+
+// replaceRRset replaces (or with no contents deletes) an rrset of a zone on
+// the server, as a change made outside of Terraform.
+func (e *accEnv) replaceRRset(t *testing.T, zoneName, name, typ string, contents ...string) {
+	t.Helper()
+	rrset := pdns_client.Rrset{Name: name, Type: typ, Changetype: "DELETE"}
+	if len(contents) > 0 {
+		rrset.Changetype = "REPLACE"
+		rrset.TTL = 3600
+		rrset.Records = lo.Map(contents, func(c string, _ int) pdns_client.Record { return pdns_client.Record{Content: c} })
+	}
+	if err := e.client.UpdateZoneRecords(context.Background(), zoneName, []pdns_client.Rrset{rrset}); err != nil {
+		t.Fatalf("change %s %s in %s: %v", typ, name, zoneName, err)
+	}
+}
+
+func TestAccZoneResourceDrift(t *testing.T) {
+	env := testAccPreCheck(t)
+	name := env.zoneName(t, "drift")
+	var serial int64
+
+	// Fully qualified names inside the zone.
+	config := accZoneConfig(env, name, `
+  nameservers = [
+    { hostname = "ns1.`+name+`", address = "10.0.0.1" },
+    { hostname = "ns2", address = "10.0.0.2" },
+  ]
+  soa = { rname = "hostmaster.`+name+`" }`)
+	want := env.checkRRsets(name,
+		"SOA "+name+" ns1."+name+" hostmaster."+name+" SERIAL 86400 7200 4000000 11200",
+		"NS "+name+" ns1."+name+",ns2."+name,
+		"A ns1."+name+" 10.0.0.1",
+		"A ns2."+name+" 10.0.0.2",
+	)
+	driftStep := func(mutate func()) resource.TestStep {
+		return resource.TestStep{
+			PreConfig: mutate,
+			Config:    config,
+			ConfigPlanChecks: resource.ConfigPlanChecks{
+				PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction("pdns_zone.z", plancheck.ResourceActionUpdate)},
+			},
+			Check: want,
+		}
+	}
+
+	resource.ParallelTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		CheckDestroy:             env.checkZoneGone(name),
+		Steps: []resource.TestStep{
+			{Config: config, Check: resource.ComposeAggregateTestCheckFunc(want, env.recordSerial(name, &serial))},
+			{
+				// No diff from the spelling: the SOA is not rewritten.
+				Config: config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+				Check: func(*terraform.State) error {
+					zone, err := env.zone(name)
+					if err != nil {
+						return err
+					}
+					if zone.Serial != serial {
+						return fmt.Errorf("serial changed from %d to %d", serial, zone.Serial)
+					}
+					return nil
+				},
+			},
+			// Glue records changed, removed or extended out of band.
+			driftStep(func() { env.replaceRRset(t, name, "ns2."+name, "A", "10.0.0.9") }),
+			driftStep(func() { env.replaceRRset(t, name, "ns2."+name, "A") }),
+			driftStep(func() { env.replaceRRset(t, name, "ns1."+name, "A", "10.0.0.1", "10.0.0.8") }),
+			// The rname changed out of band.
+			driftStep(func() {
+				env.replaceRRset(t, name, name, "SOA", "ns1."+name+" admin."+name+" 1 86400 7200 4000000 11200")
+			}),
+		},
 	})
 }
