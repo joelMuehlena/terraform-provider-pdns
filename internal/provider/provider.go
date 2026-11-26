@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/tls"
 	"net/http"
+	"strings"
+	"sync"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/function"
@@ -21,6 +23,18 @@ var (
 
 type PDNSProviderData struct {
 	pdnsClient *pdns_client.PDNSClient
+	// zoneLocks serializes read-modify-write cycles on per-zone settings
+	// (e.g. TSIG key lists) across resources applied in parallel.
+	zoneLocks sync.Map
+}
+
+// lockZone locks the given zone for exclusive modification and returns the
+// unlock function.
+func (d *PDNSProviderData) lockZone(zone string) func() {
+	m, _ := d.zoneLocks.LoadOrStore(strings.ToLower(strings.TrimSuffix(zone, ".")), &sync.Mutex{})
+	mu := m.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }
 
 type PDNSProvider struct {
@@ -104,6 +118,7 @@ func (p *PDNSProvider) Resources(ctx context.Context) []func() resource.Resource
 		NewZoneResource,
 		NewRecordResource,
 		NewTSIGKeyResource,
+		NewZoneTSIGKeyResource,
 	}
 }
 
