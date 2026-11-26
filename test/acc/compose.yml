@@ -12,12 +12,17 @@
 #   PDNS_ACC_PORT     host port of the HTTP API (default 8081)
 #   PDNS_ACC_DNS_PORT host port of the DNS listener, tcp and udp (default 15353,
 #                     as mDNS uses 5353 on macOS)
+#   PDNS_ACC_SERVER_ARGS
+#                     extra pdns_server arguments (default none), e.g.
+#                     --dnsupdate-require-tsig=yes
 #
 # The server listens on 5353 inside the container so that it also runs on
 # rootless podman, which cannot bind ports below 1024.
 services:
   pdns:
     image: docker.io/powerdns/pdns-auth-${PDNS_VERSION:-51}:${PDNS_TAG:-latest}
+    # Appended to the pdns_server command line by the image's entrypoint.
+    command: ${PDNS_ACC_SERVER_ARGS:-}
     environment:
       PDNS_AUTH_API_KEY: ${PDNS_ACC_API_KEY:-acc-test-key}
     volumes:
