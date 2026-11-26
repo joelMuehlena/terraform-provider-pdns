@@ -72,9 +72,17 @@ func (r *RecordResource) Schema(ctx context.Context, req resource.SchemaRequest,
 			},
 			"type": schema.StringAttribute{
 				Required:            true,
-				MarkdownDescription: "Type of the record e.g. A, AAAA or CNAME. Changing it replaces the record.",
+				MarkdownDescription: "Type of the record in uppercase, e.g. `A`, `AAAA` or `CNAME`. Changing it replaces the record.",
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.RequiresReplace(),
+				},
+				Validators: []validator.String{
+					// PowerDNS stores types in uppercase; a lowercase type
+					// would never be found again on read.
+					stringvalidator.RegexMatches(
+						regexp.MustCompile(`^[A-Z][A-Z0-9]*$`),
+						"must be an uppercase record type such as A, AAAA or CNAME (PowerDNS stores record types in uppercase)",
+					),
 				},
 			},
 			"ttl": schema.Int64Attribute{

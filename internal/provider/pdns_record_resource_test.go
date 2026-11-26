@@ -159,6 +159,7 @@ func TestRecordResourceErrors(t *testing.T) {
 		"no records":        {`type = "A"` + "\n" + `records = []`, `at least 1`, true},
 		"duplicate records": {`type = "A"` + "\n" + `records = ["10.0.0.1", "10.0.0.1"]`, `Duplicate List Value`, true},
 		"empty record":      {`type = "A"` + "\n" + `records = [""]`, `at least 1`, true},
+		"lowercase type":    {`type = "a"` + "\n" + `records = ["10.0.0.1"]`, `must be an uppercase record type`, true},
 		"zone missing":      {`type = "A"` + "\n" + `records = ["10.0.0.1"]`, `Zone not found`, false},
 	}
 
