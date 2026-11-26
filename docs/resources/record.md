@@ -70,7 +70,7 @@ resource "pdns_record" "test2_a" {
 
 - `name` (String) LValue of the record (name). This value will be added as prefix to the name. Supports chaining by dot e.g. `sub.test` is a valid value.
 - `records` (List of String) RValue to which the record points. For A type records this are IP Addresses. For CNAMEs this are other FQDNs and so on. The order is not significant: PowerDNS returns the records sorted and in its canonical form (e.g. AAAA addresses compressed and lowercase), and the configured values are kept as long as the server holds the same records.
-- `type` (String) Type of the record e.g. A, AAAA or CNAME
+- `type` (String) Type of the record e.g. A, AAAA or CNAME. Changing it replaces the record.
 - `zone` (String) ID of the zone in which the record should be created. The name must end with a dot `.`.
 
 ### Optional
