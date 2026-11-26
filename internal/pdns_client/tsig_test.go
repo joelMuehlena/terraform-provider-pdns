@@ -148,8 +148,7 @@ func TestZoneMetadata(t *testing.T) {
 		client, _ := newTestClient(t, http.StatusNotFound, "")
 
 		_, err := client.GetZoneMetadata(context.Background(), "missing.", "TSIG-ALLOW-DNSUPDATE")
-		var e *PDNSZoneNotFoundError
-		if !errors.As(err, &e) {
+		if _, ok := errors.AsType[*PDNSZoneNotFoundError](err); !ok {
 			t.Fatalf("expected PDNSZoneNotFoundError, got %v", err)
 		}
 	})
