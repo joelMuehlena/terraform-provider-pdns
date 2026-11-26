@@ -39,3 +39,45 @@ jobs:
         run: go build -v ./...
       - name: Vet
         run: go vet ./...
+
+  test:
+    name: test (${{ matrix.cli }} ${{ matrix.version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # 1.11 is the minimum for write-only attributes.
+          - cli: terraform
+            version: "1.11.*"
+          - cli: terraform
+            version: "1.17.*"
+          - cli: tofu
+            version: "1.11.*"
+          - cli: tofu
+            version: "1.13.*"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: "go.mod"
+          cache: true
+      - if: matrix.cli == 'terraform'
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: ${{ matrix.version }}
+          terraform_wrapper: false
+      - if: matrix.cli == 'tofu'
+        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: ${{ matrix.version }}
+          tofu_wrapper: false
+      - name: Test
+        env:
+          CLI: ${{ matrix.cli }}
+        run: |
+          if [ "$CLI" = tofu ]; then
+            export TF_ACC_TERRAFORM_PATH="$(command -v tofu)"
+            export TF_ACC_PROVIDER_HOST=registry.opentofu.org
+          fi
+          go test -race -count=1 -cover ./...

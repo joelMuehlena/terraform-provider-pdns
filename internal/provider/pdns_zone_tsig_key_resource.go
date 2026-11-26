@@ -354,9 +354,15 @@ func (r *ZoneTSIGKeyResource) load(ctx context.Context, zone string) (zoneTSIGSt
 
 // Retry tuning for apply. PowerDNS has no atomic add/remove for the zone TSIG
 // lists, so concurrent writers (e.g. separate runs) can overwrite each other.
-const (
+// These are variables so tests can shorten the delays.
+var (
 	applyMaxWrites = 8
 	applySettle    = time.Second
+	// applyBackoff returns the delay before the given retry (1-based):
+	// jittered linear backoff of 50-250ms per attempt.
+	applyBackoff = func(attempt int) time.Duration {
+		return time.Duration(attempt) * time.Duration(50+rand.IntN(200)) * time.Millisecond
+	}
 )
 
 // apply brings the zone's TSIG lists in line with want for the given key.
@@ -390,8 +396,7 @@ func (r *ZoneTSIGKeyResource) apply(ctx context.Context, zone, keyID, keyName st
 			return fmt.Errorf("TSIG key lists of zone %s were modified concurrently; gave up after %d attempts", zone, writes)
 		}
 		if writes > 0 {
-			// Jittered linear backoff: 50-250ms per attempt.
-			if err := sleepCtx(ctx, time.Duration(writes)*time.Duration(50+rand.IntN(200))*time.Millisecond); err != nil {
+			if err := sleepCtx(ctx, applyBackoff(writes)); err != nil {
 				return err
 			}
 		}

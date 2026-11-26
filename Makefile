@@ -3,3 +3,6 @@ lint:
 
 generate:
 	cd tools; go generate ./...
+
+test:
+	go test -race -cover ./...

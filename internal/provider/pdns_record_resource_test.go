@@ -1,0 +1,161 @@
+package provider
+
+import (
+	"fmt"
+	"regexp"
+	"slices"
+	"testing"
+
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
+	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	"github.com/samber/lo"
+	"gitlab.com/joelMuehlena/homelab/code/terraform/provider/terraform-provider-pdns/internal/pdns_client"
+)
+
+func recordConfig(fake *fakePDNS, body string) string {
+	return fake.providerConfig() + `
+resource "pdns_record" "r" {
+  zone = "example.test."
+  name = "www"
+` + body + `
+}
+`
+}
+
+// checkFakeRRset asserts one rrset on the fake server.
+func checkFakeRRset(fake *fakePDNS, name, typ string, ttl int64, records, comments []string) resource.TestCheckFunc {
+	return func(*terraform.State) error {
+		zone, ok := fake.zone("example.test.")
+		if !ok {
+			return fmt.Errorf("zone does not exist")
+		}
+		rr, ok := zone.rrset(name, typ)
+		if !ok {
+			return fmt.Errorf("rrset %s %s does not exist", typ, name)
+		}
+		gotRecords := lo.Map(rr.Records, func(r pdns_client.Record, _ int) string { return r.Content })
+		gotComments := lo.Map(rr.Comments, func(c pdns_client.Comment, _ int) string { return c.Content })
+		if rr.TTL != ttl || !slices.Equal(gotRecords, records) || !slices.Equal(gotComments, comments) {
+			return fmt.Errorf("rrset = ttl %d records %v comments %v, want ttl %d records %v comments %v",
+				rr.TTL, gotRecords, gotComments, ttl, records, comments)
+		}
+		return nil
+	}
+}
+
+func TestRecordResource(t *testing.T) {
+	t.Parallel()
+	fake := newFakePDNS(t)
+	fake.addZone("example.test.")
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		CheckDestroy: func(*terraform.State) error {
+			zone, _ := fake.zone("example.test.")
+			if _, ok := zone.rrset("www.example.test.", "A"); ok {
+				return fmt.Errorf("rrset still exists")
+			}
+			return nil
+		},
+		Steps: []resource.TestStep{
+			{
+				Config: recordConfig(fake, `
+  type    = "A"
+  records = ["10.0.0.1", "10.0.0.2"]`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("pdns_record.r", "ttl", "1800"),
+					resource.TestCheckNoResourceAttr("pdns_record.r", "comments"),
+					checkFakeRRset(fake, "www.example.test.", "A", 1800, []string{"10.0.0.1", "10.0.0.2"}, nil),
+				),
+			},
+			{
+				Config: recordConfig(fake, `
+  type     = "A"
+  ttl      = 60
+  records  = ["10.0.0.3"]
+  comments = ["managed by terraform"]`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction("pdns_record.r", plancheck.ResourceActionUpdate)},
+				},
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("pdns_record.r", "comments.0", "managed by terraform"),
+					checkFakeRRset(fake, "www.example.test.", "A", 60, []string{"10.0.0.3"}, []string{"managed by terraform"}),
+				),
+			},
+			{
+				// Records changed out of band are restored.
+				PreConfig: func() {
+					fake.mutate(func(f *fakePDNS) {
+						z := f.zones["example.test"]
+						for i := range z.rrsets {
+							if z.rrsets[i].Type == "A" {
+								z.rrsets[i].Records = []pdns_client.Record{{Content: "10.9.9.9"}}
+							}
+						}
+					})
+				},
+				Config: recordConfig(fake, `
+  type     = "A"
+  ttl      = 60
+  records  = ["10.0.0.3"]
+  comments = ["managed by terraform"]`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction("pdns_record.r", plancheck.ResourceActionUpdate)},
+				},
+				Check: checkFakeRRset(fake, "www.example.test.", "A", 60, []string{"10.0.0.3"}, []string{"managed by terraform"}),
+			},
+		},
+	})
+}
+
+func TestRecordResourceFullyQualifiedName(t *testing.T) {
+	t.Parallel()
+	fake := newFakePDNS(t)
+	fake.addZone("example.test.")
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []resource.TestStep{{
+			Config: fake.providerConfig() + `
+resource "pdns_record" "r" {
+  zone    = "example.test."
+  name    = "api.example.test."
+  type    = "CNAME"
+  records = ["www.example.test."]
+}
+`,
+			Check: checkFakeRRset(fake, "api.example.test.", "CNAME", 1800, []string{"www.example.test."}, nil),
+		}},
+	})
+}
+
+func TestRecordResourceErrors(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]struct {
+		body    string
+		wantErr string
+		plan    bool
+	}{
+		"no records":        {`type = "A"` + "\n" + `records = []`, `at least 1`, true},
+		"duplicate records": {`type = "A"` + "\n" + `records = ["10.0.0.1", "10.0.0.1"]`, `Duplicate List Value`, true},
+		"empty record":      {`type = "A"` + "\n" + `records = [""]`, `at least 1`, true},
+		"zone missing":      {`type = "A"` + "\n" + `records = ["10.0.0.1"]`, `Zone not found`, false},
+	}
+
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			fake := newFakePDNS(t)
+			resource.UnitTest(t, resource.TestCase{
+				ProtoV6ProviderFactories: testProviderFactories,
+				Steps: []resource.TestStep{{
+					Config:      recordConfig(fake, tt.body),
+					PlanOnly:    tt.plan,
+					ExpectError: regexp.MustCompile(tt.wantErr),
+				}},
+			})
+		})
+	}
+}
