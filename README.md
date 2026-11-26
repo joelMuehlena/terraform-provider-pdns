@@ -8,6 +8,20 @@ zones, records and TSIG keys — through its HTTP API using Terraform or OpenTof
 - Terraform >= 1.0 or OpenTofu >= 1.6
 - A reachable PowerDNS Authoritative Server with the [HTTP API](https://doc.powerdns.com/authoritative/http-api/index.html) enabled and an API key
 
+## Support matrix
+
+| Component                      | Supported                  | Tested in CI                    |
+| ------------------------------ | -------------------------- | ------------------------------- |
+| Terraform                      | >= 1.0                     | 1.15, 1.16, 1.17                |
+| OpenTofu                       | >= 1.6                     | 1.11, 1.12, 1.13                |
+| PowerDNS Authoritative Server  | 4.9, 5.0, 5.1              | 4.9, 5.0, 5.1                   |
+| PowerDNS database backends     | `gsqlite3`, `gpgsql`       | `gsqlite3`, `gpgsql`            |
+
+- The provider uses plugin protocol 6, so it works with any Terraform or OpenTofu version that speaks it. CI covers the three latest minor versions of each CLI; older versions within the supported range are not tested.
+- Every PowerDNS version is tested against both backends in the table. Other backends use the same HTTP API but are not covered by CI.
+- Write-only attributes such as `pdns_tsig_key.key_wo` need Terraform or OpenTofu >= 1.11.
+- PowerDNS versions before 4.9 are not tested. 4.9 lacks `dnsupdate-require-tsig`; see [Securing dynamic updates](#securing-dynamic-updates) for `lock_dnsupdate`.
+
 ## Usage
 
 ```terraform
