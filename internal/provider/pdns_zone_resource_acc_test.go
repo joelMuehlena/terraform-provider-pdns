@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -240,6 +241,41 @@ func TestAccZoneResourceMasters(t *testing.T) {
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckNoResourceAttr("pdns_zone.z", "masters"),
 					env.checkMasters(name, "Native"),
+				),
+			},
+		},
+	})
+}
+
+func TestAccZoneResourceNameserverAddressOutOfZone(t *testing.T) {
+	env := testAccPreCheck(t)
+	name := env.zoneName(t, "ooz")
+
+	resource.ParallelTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		CheckDestroy:             env.checkZoneGone(name),
+		Steps: []resource.TestStep{
+			{
+				// PowerDNS would refuse the glue record with 422 "Name is out
+				// of zone"; the plan fails instead.
+				Config: accZoneConfig(env, name, `
+  nameservers = [{ hostname = "ns1.other.org.", address = "10.0.0.1" }]
+  soa         = { rname = "hostmaster" }`),
+				PlanOnly:    true,
+				ExpectError: regexp.MustCompile(`Nameserver address outside the zone`),
+			},
+			{
+				// Nameservers outside the zone without address are fine.
+				Config: accZoneConfig(env, name, `
+  nameservers = [
+    { hostname = "ns1", address = "10.0.0.1" },
+    { hostname = "ns2.other.org." },
+  ]
+  soa = { rname = "hostmaster" }`),
+				Check: env.checkRRsets(name,
+					"SOA "+name+" ns1."+name+" hostmaster."+name+" SERIAL 86400 7200 4000000 11200",
+					"NS "+name+" ns1."+name+",ns2.other.org.",
+					"A ns1."+name+" 10.0.0.1",
 				),
 			},
 		},
