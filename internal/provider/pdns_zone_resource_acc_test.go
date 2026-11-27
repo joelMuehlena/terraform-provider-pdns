@@ -150,6 +150,51 @@ func TestAccZoneResource(t *testing.T) {
 	})
 }
 
+// checkStateSerial asserts that the serial in state is the one of the zone on
+// the server, so the next refresh does not change it.
+func (e *accEnv) checkStateSerial(zoneName string) func(*terraform.State) error {
+	return func(s *terraform.State) error {
+		zone, err := e.zone(zoneName)
+		if err != nil {
+			return err
+		}
+		return resource.TestCheckResourceAttr("pdns_zone.z", "serial", fmt.Sprint(zone.Serial))(s)
+	}
+}
+
+func TestAccZoneResourceSerialMatchesServer(t *testing.T) {
+	env := testAccPreCheck(t)
+
+	tests := map[string]string{
+		"without SOA record": `soa = { rname = "hostmaster", create_record = false }`,
+		// The kind switch of the locked create changes the serial.
+		"locked with DNSSEC": `
+  soa            = { rname = "hostmaster" }
+  lock_dnsupdate = true
+  dnssec         = true`,
+	}
+	for name, body := range tests {
+		t.Run(name, func(t *testing.T) {
+			zone := env.zoneName(t, "serial")
+			config := func(ns string) string {
+				return accZoneConfig(env, zone, `
+  nameservers = [{ hostname = "`+ns+`" }]
+  `+body)
+			}
+
+			resource.ParallelTest(t, resource.TestCase{
+				ProtoV6ProviderFactories: testProviderFactories,
+				CheckDestroy:             env.checkZoneGone(zone),
+				Steps: []resource.TestStep{
+					{Config: config("ns1"), Check: env.checkStateSerial(zone)},
+					// PowerDNS bumps the serial on updates (SOA-EDIT-API).
+					{Config: config("ns2"), Check: env.checkStateSerial(zone)},
+				},
+			})
+		})
+	}
+}
+
 func TestAccZoneResourceCreateWithDNSSEC(t *testing.T) {
 	env := testAccPreCheck(t)
 

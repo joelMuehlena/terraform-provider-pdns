@@ -964,7 +964,14 @@ func TestZoneResourceUpdateWithoutSOARecord(t *testing.T) {
 	resource.UnitTest(t, resource.TestCase{
 		ProtoV6ProviderFactories: testProviderFactories,
 		Steps: []resource.TestStep{
-			{Config: config("ns1", `rname = "hostmaster"`), Check: checkRRsets(fake, "example.test.", defaultSOA)},
+			{
+				Config: config("ns1", `rname = "hostmaster"`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					checkRRsets(fake, "example.test.", defaultSOA),
+					// The serial of the server's SOA record, as Read stores it.
+					resource.TestCheckResourceAttr("pdns_zone.z", "serial", "0"),
+				),
+			},
 			{
 				// The provider does not manage the SOA record: changing soa
 				// or the first nameserver leaves it alone.
