@@ -84,7 +84,7 @@ Optional:
 
 Required:
 
-- `rname` (String) The RName of the SOA record. Represents the administrator's email address. It will be suffixed with the zone name unless ending with an explicit '.'. "@" and empty names are rejected.
+- `rname` (String) The RName of the SOA record. Represents the administrator's email address. It will be suffixed with the zone name unless ending with an explicit '.'. Write the address as DNS name: "hostmaster@example.com" is "hostmaster.example.com." (dots in the part before the "@" are escaped, e.g. "john\\.doe.example.com."). "@" and empty names are rejected.
 
 Optional:
 

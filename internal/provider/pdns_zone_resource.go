@@ -149,7 +149,6 @@ func (v ipAddressValidator) ValidateString(_ context.Context, req validator.Stri
 }
 
 // TODO: Further DNSSec functionality?
-// TODO: Support for other kinds Like slave or master
 
 func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
@@ -266,9 +265,10 @@ func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 					},
 					"rname": schema.StringAttribute{
 						Required:    true,
-						Description: "The RName of the SOA record. Represents the administrator's email address. It will be suffixed with the zone name unless ending with an explicit '.'. \"@\" and empty names are rejected.",
+						Description: "The RName of the SOA record. Represents the administrator's email address. It will be suffixed with the zone name unless ending with an explicit '.'. Write the address as DNS name: \"hostmaster@example.com\" is \"hostmaster.example.com.\" (dots in the part before the \"@\" are escaped, e.g. \"john\\\\.doe.example.com.\"). \"@\" and empty names are rejected.",
 						Validators: []validator.String{
 							dnsNameValidator{},
+							rnameValidator{},
 						},
 					},
 					"refresh": schema.Int64Attribute{
@@ -948,7 +948,7 @@ const (
 // written to the server.
 func readSOA(ctx context.Context, zone pdns_client.PDNSZone, current types.Object) (types.Object, diag.Diagnostics) {
 	soaRecord, isFound := lo.Find(zone.Rrsets, func(item pdns_client.Rrset) bool {
-		return item.Type == "SOA" && item.Name == zone.Name && len(item.Records) > 0
+		return item.Type == "SOA" && sameDNSName(item.Name, zone.Name) && len(item.Records) > 0
 	})
 	if !isFound {
 		return current, nil
@@ -1237,25 +1237,28 @@ func mastersValue(masters []string, prior types.List) types.List {
 // That is the glue of removed nameservers, and of nameservers whose address
 // was removed or changed to the other address family (Diff reports both as
 // changed). With rewriteAll (the TTL changed) the glue of every planned
-// nameserver is written.
+// nameserver is written. Errors of planned nameservers point at their index
+// in the configuration.
 func nameserverRecordChanges(ctx context.Context, planned, current []Nameserver, zoneName string, ttl int64, rewriteAll bool) ([]pdns_client.Rrset, diag.Diagnostics) {
 	var diags diag.Diagnostics
 	addedOrChanged, deleted := Diff(planned, current, zoneName)
-	if rewriteAll {
-		addedOrChanged = planned
-	}
+	changed := lo.SliceToMap(addedOrChanged, func(ns Nameserver) (string, bool) { return nameserverKey(ns.Hostname, zoneName), true })
 	previous := lo.KeyBy(current, func(ns Nameserver) string { return nameserverKey(ns.Hostname, zoneName) })
-	records := make([]pdns_client.Rrset, 0, len(addedOrChanged)+len(deleted))
+	records := make([]pdns_client.Rrset, 0, len(planned)+len(deleted))
 
-	for i, nameserver := range addedOrChanged {
+	for i, nameserver := range planned {
+		if !rewriteAll && !changed[nameserverKey(nameserver.Hostname, zoneName)] {
+			continue
+		}
+		attrPath := path.Root("nameservers").AtListIndex(i)
 		var recordType string
 		if nameserver.Address == nil {
-			tflog.Info(ctx, "Skipping nameserver A or AAAA record, because Address is not set.", map[string]any{"path": path.Root("nameservers[" + strconv.Itoa(i) + "]").String()})
+			tflog.Info(ctx, "Skipping nameserver A or AAAA record, because Address is not set.", map[string]any{"path": attrPath.String()})
 		} else {
 			var ok bool
 			recordType, ok = addressRecordType(*nameserver.Address)
 			if !ok {
-				diags.AddAttributeError(path.Root("nameservers["+strconv.Itoa(i)+"]"), "Parse Error", "Found invalid IPv4 or IPv6 address")
+				diags.AddAttributeError(attrPath.AtName("address"), "Parse Error", fmt.Sprintf("%q is not a valid IPv4 or IPv6 address", *nameserver.Address))
 				return nil, diags
 			}
 
@@ -1285,15 +1288,18 @@ func nameserverRecordChanges(ctx context.Context, planned, current []Nameserver,
 		}
 	}
 
-	for i, nameserver := range deleted {
+	for _, nameserver := range deleted {
 		if nameserver.Address == nil {
 			// No address, so there is no glue record to delete.
 			continue
 		}
 
+		// A removed nameserver is no longer in the configuration, so the
+		// error has no attribute path.
 		recordType, ok := addressRecordType(*nameserver.Address)
 		if !ok {
-			diags.AddAttributeError(path.Root("nameservers["+strconv.Itoa(i)+"]"), "Parse Error", "Found invalid IPv4 or IPv6 address")
+			diags.AddError("Parse Error", fmt.Sprintf("The removed nameserver %s has the invalid address %q in the state, so its glue record cannot be deleted.",
+				fqdn(nameserver.Hostname, zoneName), *nameserver.Address))
 			return nil, diags
 		}
 

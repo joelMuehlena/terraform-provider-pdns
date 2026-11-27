@@ -554,6 +554,7 @@ func TestZoneResourceErrors(t *testing.T) {
 		"empty hostname":       {`nameservers = [{ hostname = "" }]` + "\n" + `soa = { rname = "h" }`, `Invalid DNS name`},
 		"rname @":              {`nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = { rname = "@" }`, `"@" is not supported`},
 		"rname empty label":    {`nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = { rname = "host..master" }`, `empty label`},
+		"rname email":          {`nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = { rname = "hostmaster@example.test" }`, `Write\s+"hostmaster.example.test." instead`},
 		"masters on Native":    {`masters = ["192.0.2.1"]` + "\n" + `nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = { rname = "h" }`, `masters requires a secondary zone`},
 		"out-of-zone address":  {`nameservers = [{ hostname = "ns1" }, { hostname = "ns2.other.org.", address = "10.0.0.2" }]` + "\n" + `soa = { rname = "h" }`, `ns2.other.org. is not inside the zone\s+example.test.`},
 		"duplicate nameserver": {`nameservers = [{ hostname = "ns1" }, { hostname = "ns2" }, { hostname = "NS1.example.test." }]` + "\n" + `soa = { rname = "h" }`, `NS1.example.test. is listed more than once \(at\s+index 0 and 2\)`},
