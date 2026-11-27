@@ -15,6 +15,21 @@ updates:
     commit-message:
       prefix: deps
       include: scope
+  # Documentation tooling (tfplugindocs, copywrite) of `mise run generate`.
+  - package-ecosystem: gomod
+    directory: /tools
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - dependencies::go
+    assignees:
+      - joelMuehlena
+    reviewers:
+      - joelMuehlena
+    commit-message:
+      prefix: deps
+      include: scope
   - package-ecosystem: github-actions
     directory: /
     schedule:

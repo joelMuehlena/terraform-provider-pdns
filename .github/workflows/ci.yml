@@ -51,6 +51,34 @@ jobs:
       - run: mise run build
       - run: mise run vet
 
+  # docs/ is generated from the schema descriptions, examples/ and the
+  # tfplugindocs templates; fail when a change did not regenerate it.
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
+        with:
+          # tofu formats the examples, terraform exports the provider schema.
+          install_args: go terraform opentofu
+          cache: true
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-docs-${{ hashFiles('mise.toml', '**/go.sum') }}
+          restore-keys: ${{ runner.os }}-docs-
+      - run: mise run generate
+      - name: Check for drift
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            git status --short
+            git diff
+            echo "::error::docs/ or examples/ are out of date. Run 'mise run generate' and commit the result."
+            exit 1
+          fi
+
   test:
     name: test (${{ matrix.cli }} ${{ matrix.version }})
     runs-on: ubuntu-latest
