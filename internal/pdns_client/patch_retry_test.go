@@ -2,16 +2,19 @@ package pdns_client
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // newFlakyServer answers the first `fail` PATCH requests with status and
-// body, then 204.
+// body, then 204. The client does not wait between retries.
 func newFlakyServer(t *testing.T, fail int32, status int, body string) (*PDNSClient, *atomic.Int32) {
 	t.Helper()
 	var calls atomic.Int32
@@ -25,7 +28,9 @@ func newFlakyServer(t *testing.T, fail int32, status int, body string) (*PDNSCli
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	t.Cleanup(srv.Close)
-	return NewPDNSClient(srv.Client(), srv.URL, "localhost", testAPIKey), &calls
+	client := NewPDNSClient(srv.Client(), srv.URL, "localhost", testAPIKey)
+	client.sleep = func(context.Context, time.Duration) error { return nil }
+	return client, &calls
 }
 
 // Responses of PowerDNS with the gpgsql backend to concurrent PATCHes of one
@@ -115,5 +120,76 @@ func TestUpdateZoneRecordsDoesNotRetryOtherErrors(t *testing.T) {
 				t.Errorf("requests = %d, want 1 (no retry)", got)
 			}
 		})
+	}
+}
+
+func TestPatchRetryDelay(t *testing.T) {
+	t.Parallel()
+	client := &PDNSClient{}
+	for retry := 1; retry <= patchDeadlockRetries; retry++ {
+		mean := time.Duration(retry) * patchRetryBaseDelay
+		client.randInt64N = func(int64) int64 { return 0 }
+		if got := client.patchRetryDelay(retry); got != mean/2 {
+			t.Errorf("retry %d, smallest delay = %v, want %v", retry, got, mean/2)
+		}
+		client.randInt64N = func(n int64) int64 { return n - 1 }
+		if got := client.patchRetryDelay(retry); got != mean*3/2-1 {
+			t.Errorf("retry %d, largest delay = %v, want %v", retry, got, mean*3/2-1)
+		}
+	}
+
+	// The default random source stays in range and does not repeat itself.
+	client.randInt64N = nil
+	seen := map[time.Duration]bool{}
+	for range 100 {
+		d := client.patchRetryDelay(2)
+		if d < patchRetryBaseDelay || d >= 3*patchRetryBaseDelay {
+			t.Fatalf("delay %v out of [%v, %v)", d, patchRetryBaseDelay, 3*patchRetryBaseDelay)
+		}
+		seen[d] = true
+	}
+	if len(seen) < 50 {
+		t.Errorf("only %d distinct delays out of 100", len(seen))
+	}
+}
+
+func TestUpdateZoneRecordsBackoff(t *testing.T) {
+	t.Parallel()
+	client, _ := newFlakyServer(t, 100, http.StatusInternalServerError, deadlockBody)
+	var delays []time.Duration
+	client.sleep = func(_ context.Context, d time.Duration) error {
+		delays = append(delays, d)
+		return nil
+	}
+	client.randInt64N = func(n int64) int64 { return n / 2 }
+
+	if err := client.UpdateZoneRecords(context.Background(), "z.", nil); err == nil {
+		t.Fatal("expected an error")
+	}
+	want := []time.Duration{100 * time.Millisecond, 200 * time.Millisecond, 300 * time.Millisecond, 400 * time.Millisecond}
+	if !slices.Equal(delays, want) {
+		t.Errorf("delays = %v, want %v", delays, want)
+	}
+}
+
+func TestUpdateZoneRecordsStopsWaitingWhenCanceled(t *testing.T) {
+	t.Parallel()
+	client, calls := newFlakyServer(t, 100, http.StatusInternalServerError, deadlockBody)
+	// The real wait, of 150ms before the first retry.
+	client.sleep = nil
+	client.randInt64N = func(n int64) int64 { return n - 1 }
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := client.UpdateZoneRecords(ctx, "z.", nil)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected the context error, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 120*time.Millisecond {
+		t.Errorf("returned after %v, want right after the context was done", elapsed)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("requests = %d, want 1", got)
 	}
 }
