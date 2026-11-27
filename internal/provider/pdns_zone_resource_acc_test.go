@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -146,6 +147,44 @@ func TestAccZoneResource(t *testing.T) {
 			},
 		},
 	})
+}
+
+func TestAccZoneResourceCreateWithDNSSEC(t *testing.T) {
+	env := testAccPreCheck(t)
+
+	tests := map[string]string{
+		"unlocked": `lock_dnsupdate = false`,
+		// Created as Slave, locked, then switched to Native.
+		"locked": `lock_dnsupdate = true`,
+		// Without a SOA record PowerDNS cannot rectify the zone when DNSSEC is
+		// only enabled with the kind switch.
+		"locked without SOA record": `
+  lock_dnsupdate = true
+  soa            = { rname = "hostmaster", create_record = false }`,
+	}
+	for name, body := range tests {
+		t.Run(name, func(t *testing.T) {
+			zone := env.zoneName(t, "dnssec")
+			if !strings.Contains(body, "soa") {
+				body += "\n  soa = { rname = \"hostmaster\" }"
+			}
+
+			resource.ParallelTest(t, resource.TestCase{
+				ProtoV6ProviderFactories: testProviderFactories,
+				CheckDestroy:             env.checkZoneGone(zone),
+				Steps: []resource.TestStep{{
+					Config: accZoneConfig(env, zone, `
+  dnssec      = true
+  nameservers = [{ hostname = "ns1" }]
+  `+body),
+					Check: resource.ComposeAggregateTestCheckFunc(
+						resource.TestCheckResourceAttr("pdns_zone.z", "dnssec", "true"),
+						env.checkZoneSettings(zone, "Native", true),
+					),
+				}},
+			})
+		})
+	}
 }
 
 func TestAccZoneResourceWithoutSOARecord(t *testing.T) {
