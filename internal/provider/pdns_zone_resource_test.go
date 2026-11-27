@@ -1232,3 +1232,72 @@ func TestZoneResourceSerialNeverDecreases(t *testing.T) {
 		})
 	}
 }
+
+func TestZoneResourceUppercaseName(t *testing.T) {
+	t.Parallel()
+	fake := newFakePDNS(t)
+	config := fake.providerConfig() + `
+resource "pdns_zone" "z" {
+  name        = "Example.Test."
+  nameservers = [{ hostname = "ns1", address = "10.0.0.1" }]
+  soa         = { rname = "hostmaster" }
+}
+`
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		CheckDestroy:             checkZoneGone(fake, "example.test."),
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("pdns_zone.z", "name", "Example.Test."),
+					checkRRsets(fake, "example.test.",
+						"SOA example.test. ns1.Example.Test. hostmaster.Example.Test. SERIAL 86400 7200 4000000 11200",
+						"A ns1.example.test. 10.0.0.1",
+					),
+				),
+			},
+			{
+				// The server returns the name lowercased: no diff, so no
+				// replacement.
+				Config: config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+			},
+			{
+				// An import keeps the spelling of the import ID.
+				Config:                               config,
+				ResourceName:                         "pdns_zone.z",
+				ImportState:                          true,
+				ImportStateId:                        "Example.Test.",
+				ImportStateVerify:                    true,
+				ImportStateVerifyIdentifierAttribute: "name",
+			},
+		},
+	})
+}
+
+func TestZoneNameValue(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		server  string
+		current types.String
+		want    string
+	}{
+		{"example.test.", types.StringValue("Example.Test."), "Example.Test."},
+		{"example.test.", types.StringValue("example.test."), "example.test."},
+		// Import IDs without trailing dot take the server's name, which the
+		// name attribute requires to end with a dot.
+		{"example.test.", types.StringValue("Example.Test"), "example.test."},
+		{"example.test.", types.StringValue("other.test."), "example.test."},
+		{"example.test.", types.StringNull(), "example.test."},
+		{"example.test.", types.StringUnknown(), "example.test."},
+	}
+	for _, tt := range tests {
+		if got := zoneNameValue(tt.server, tt.current); got.ValueString() != tt.want {
+			t.Errorf("zoneNameValue(%q, %v) = %v, want %q", tt.server, tt.current, got, tt.want)
+		}
+	}
+}

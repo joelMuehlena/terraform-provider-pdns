@@ -598,7 +598,7 @@ func (r *ZoneResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 
 	data.DNSSec = types.BoolValue(zone.Dnssec)
 	data.Kind = types.StringValue(zone.Kind)
-	data.Name = types.StringValue(zone.Name)
+	data.Name = zoneNameValue(zone.Name, data.Name)
 	data.Serial = types.StringValue(fmt.Sprintf("%d", zone.Serial))
 	data.Masters = mastersValue(zone.Masters, data.Masters)
 
@@ -768,6 +768,18 @@ func (r *ZoneResource) Delete(ctx context.Context, req resource.DeleteRequest, r
 		return
 	}
 	handleClientError(&resp.Diagnostics, err)
+}
+
+// zoneNameValue returns the name attribute for a zone the server calls
+// server, given the current one (the configured name, or the import ID on
+// import). PowerDNS returns zone names lowercased; while current names the
+// same zone, its spelling is kept, so a name with uppercase letters does not
+// show a diff and force a replacement on every plan.
+func zoneNameValue(server string, current types.String) types.String {
+	if !current.IsNull() && !current.IsUnknown() && strings.HasSuffix(current.ValueString(), ".") && sameDNSName(server, current.ValueString()) {
+		return current
+	}
+	return types.StringValue(server)
 }
 
 // ImportState imports a zone by its name. Read then builds soa and

@@ -205,8 +205,12 @@ func (f *fakePDNS) createZone(w http.ResponseWriter, r *http.Request) bool {
 		return false
 	}
 
+	// Like PowerDNS, store the zone and owner names lowercased.
+	in.Name = strings.ToLower(in.Name)
 	zone := &fakeZone{name: in.Name, kind: in.Kind, dnssec: in.Dnssec, metadata: map[string][]string{}}
-	zone.rrsets = append(zone.rrsets, in.Rrsets...)
+	for _, rr := range in.Rrsets {
+		zone.rrsets = append(zone.rrsets, fakeStoreRrset(rr))
+	}
 	zone.setMasters(in.Masters)
 	if _, ok := zone.rrset(in.Name, "SOA"); !ok {
 		// Like PowerDNS, create a default SOA record if none is given.
@@ -422,7 +426,7 @@ func (z *fakeZone) view(query url.Values) map[string]any {
 
 	rrsets := z.rrsets
 	if name := query.Get("rrset_name"); name != "" {
-		rrsets = slices.DeleteFunc(slices.Clone(rrsets), func(rr pdns_client.Rrset) bool { return rr.Name != name })
+		rrsets = slices.DeleteFunc(slices.Clone(rrsets), func(rr pdns_client.Rrset) bool { return fakeKey(rr.Name) != fakeKey(name) })
 	}
 	out["rrsets"] = nonNil(rrsets)
 	return out

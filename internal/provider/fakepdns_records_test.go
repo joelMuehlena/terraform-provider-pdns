@@ -10,6 +10,8 @@ import (
 
 // fakeStoreRrset turns an rrset as sent in a PATCH into the form PowerDNS
 // stores (and later returns) it in, as observed on pdns-auth 5.1:
+//   - the owner name is lowercased ("WWW.example.com." is stored as
+//     "www.example.com."), the contents keep their case,
 //   - the type is uppercased ("a" is stored as "A"),
 //   - the content of A and AAAA records is canonicalized
 //     ("2345:0425:2CA1:0000:0000:0567:5673:23b5" becomes "2345:425:2ca1::567:5673:23b5"),
@@ -17,6 +19,7 @@ import (
 //     ("10   mail." becomes "10 mail."),
 //   - the records are sorted by content, whatever order they were sent in.
 func fakeStoreRrset(rr pdns_client.Rrset) pdns_client.Rrset {
+	rr.Name = strings.ToLower(rr.Name)
 	rr.Type = strings.ToUpper(rr.Type)
 	records := slices.Clone(rr.Records)
 	for i := range records {
