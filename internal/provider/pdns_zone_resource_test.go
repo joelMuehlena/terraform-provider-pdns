@@ -985,3 +985,30 @@ func TestZoneResourceUpdateWithoutSOARecord(t *testing.T) {
 		},
 	})
 }
+
+func TestZoneResourceRemoveNameserverWithDeletedGlue(t *testing.T) {
+	t.Parallel()
+	fake := newFakePDNS(t)
+	config := func(ns string) string {
+		return zoneConfig(fake, `
+  nameservers = [`+ns+`]
+  soa         = { rname = "hostmaster" }`)
+	}
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: config(`{ hostname = "ns1", address = "10.0.0.1" }, { hostname = "ns2", address = "10.0.0.2" }`)},
+			{
+				// ns2's glue is deleted out of band (read back as a null
+				// address) and ns2 is removed in the same apply.
+				PreConfig: func() { setGlue(fake, "example.test.", "ns2.example.test.") },
+				Config:    config(`{ hostname = "ns1", address = "10.0.0.1" }`),
+				Check: checkRRsets(fake, "example.test.",
+					"SOA example.test. ns1.example.test. hostmaster.example.test. SERIAL 86400 7200 4000000 11200",
+					"A ns1.example.test. 10.0.0.1",
+				),
+			},
+		},
+	})
+}
