@@ -1175,3 +1175,60 @@ func TestReadZoneTTL(t *testing.T) {
 		}
 	}
 }
+
+// setSOASerial sets the serial of the SOA record of a zone on the fake server,
+// as a change made outside of Terraform.
+func setSOASerial(fake *fakePDNS, zoneName, serial string) {
+	fake.mutate(func(f *fakePDNS) {
+		z := f.zones[fakeKey(zoneName)]
+		for i, rr := range z.rrsets {
+			if rr.Type == "SOA" {
+				fields := strings.Fields(rr.Records[0].Content)
+				fields[2] = serial
+				z.rrsets[i].Records = []pdns_client.Record{{Content: strings.Join(fields, " ")}}
+			}
+		}
+		z.updateSerial()
+	})
+}
+
+func TestZoneResourceSerialNeverDecreases(t *testing.T) {
+	t.Parallel()
+	today := time.Now().Format("20060102")
+	tomorrow := time.Now().AddDate(0, 0, 1).Format("20060102")
+
+	tests := map[string]struct{ current, want string }{
+		// Not YYYYMMDD100, which PowerDNS rejects.
+		"last of the day": {today + "99", tomorrow + "00"},
+		"future date":     {"2099010101", "2099010102"},
+		"tomorrow":        {tomorrow + "00", tomorrow + "01"},
+		"imported high":   {"4000000000", "4000000001"},
+		"no date":         {"7", today + "01"},
+	}
+	for label, tt := range tests {
+		t.Run(label, func(t *testing.T) {
+			t.Parallel()
+			fake := newFakePDNS(t)
+			config := func(refresh int) string {
+				return zoneConfig(fake, fmt.Sprintf(`
+  nameservers = [{ hostname = "ns1" }]
+  soa         = { rname = "hostmaster", refresh = %d }`, refresh))
+			}
+			resource.UnitTest(t, resource.TestCase{
+				ProtoV6ProviderFactories: testProviderFactories,
+				Steps: []resource.TestStep{
+					{Config: config(3600)},
+					{
+						PreConfig:    func() { setSOASerial(fake, "example.test.", tt.current) },
+						RefreshState: true,
+						Check:        resource.TestCheckResourceAttr("pdns_zone.z", "serial", tt.current),
+					},
+					{
+						Config: config(7200),
+						Check:  resource.TestCheckResourceAttr("pdns_zone.z", "serial", tt.want),
+					},
+				},
+			})
+		})
+	}
+}

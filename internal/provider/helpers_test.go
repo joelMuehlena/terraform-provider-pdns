@@ -106,25 +106,80 @@ func TestHandleClientError(t *testing.T) {
 func TestIncreaseSOASerial(t *testing.T) {
 	t.Parallel()
 	today := time.Now().Format("20060102")
+	for current, want := range map[string]string{"": today + "01", "2000010101": today + "01", today + "01": today + "02"} {
+		if got, err := IncreaseSOASerial(current); err != nil || got != want {
+			t.Errorf("IncreaseSOASerial(%q) = %q, %v; want %q", current, got, err, want)
+		}
+	}
+}
+
+func TestNextSOASerial(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 27, 12, 0, 0, 0, time.UTC)
 
 	tests := []struct {
 		current, want string
 		wantErr       bool
 	}{
-		{"2000010101", today + "01", false},
-		{"", today + "01", false},
-		{today + "01", today + "02", false},
-		{today + "09", today + "10", false},
-		{today + "xx", "", true},
+		{"", "2026112701", false},
+		// An older date serial starts today's serials.
+		{"2000010101", "2026112701", false},
+		{"2026112600", "2026112701", false},
+		{"2026112701", "2026112702", false},
+		{"2026112709", "2026112710", false},
+		// After 99 changes on one day the serial continues numerically
+		// instead of overflowing to YYYYMMDD100.
+		{"2026112799", "2026112800", false},
+		// Serials ahead of today's date never go backwards.
+		{"2026112800", "2026112801", false},
+		{"2099010101", "2099010102", false},
+		// Imported zones with serials that are no dates.
+		{"1", "2026112701", false},
+		{"0", "2026112701", false},
+		{"3000000000", "3000000001", false},
+		// At the maximum of 32 bits the serial wraps around (RFC 1982).
+		{"4294967294", "4294967295", false},
+		{"4294967295", "2026112701", false},
+		{"4294967296", "", true},
+		{"-1", "", true},
+		{"2026112701xx", "", true},
+		{"abc", "", true},
 	}
 	for _, tt := range tests {
-		got, err := IncreaseSOASerial(tt.current)
+		got, err := nextSOASerial(tt.current, now)
 		if (err != nil) != tt.wantErr {
-			t.Errorf("IncreaseSOASerial(%q) error = %v, wantErr %v", tt.current, err, tt.wantErr)
+			t.Errorf("nextSOASerial(%q) error = %v, wantErr %v", tt.current, err, tt.wantErr)
 			continue
 		}
 		if got != tt.want {
-			t.Errorf("IncreaseSOASerial(%q) = %q, want %q", tt.current, got, tt.want)
+			t.Errorf("nextSOASerial(%q) = %q, want %q", tt.current, got, tt.want)
+		}
+	}
+
+	// In the year 2148 today's serial is no longer greater than the maximum
+	// in serial arithmetic; the serial wraps to 0.
+	if got, err := nextSOASerial("4294967295", time.Date(2148, 1, 1, 0, 0, 0, 0, time.UTC)); err != nil || got != "0" {
+		t.Errorf("nextSOASerial at the maximum in 2148 = %q, %v; want 0", got, err)
+	}
+}
+
+func TestSerialGreater(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		a, b uint64
+		want bool
+	}{
+		{2, 1, true},
+		{1, 2, false},
+		{1, 1, false},
+		{0, 4294967295, true},
+		{2026112701, 4294967295, true},
+		{4294967295, 2026112701, false},
+		{1 << 31, 0, false}, // undefined in RFC 1982, treated as not greater
+	}
+	for _, tt := range tests {
+		if got := serialGreater(tt.a, tt.b); got != tt.want {
+			t.Errorf("serialGreater(%d, %d) = %v, want %v", tt.a, tt.b, got, tt.want)
 		}
 	}
 }
