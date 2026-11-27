@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"regexp"
 	"slices"
 	"strconv"
@@ -111,7 +112,41 @@ func (r *ZoneResource) Metadata(ctx context.Context, req resource.MetadataReques
 	resp.TypeName = req.ProviderTypeName + "_zone"
 }
 
-var IP_REGEX = regexp.MustCompile(`^((([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])$|^(([a-fA-F]|[a-fA-F][a-fA-F0-9\-]*[a-fA-F0-9])\.)*([A-Fa-f]|[A-Fa-f][A-Fa-f0-9\-]*[A-Fa-f0-9])$|^(?:(?:(?:(?:(?:(?:(?:[0-9a-fA-F]{1,4})):){6})(?:(?:(?:(?:(?:[0-9a-fA-F]{1,4})):(?:(?:[0-9a-fA-F]{1,4})))|(?:(?:(?:(?:(?:25[0-5]|(?:[1-9]|1[0-9]|2[0-4])?[0-9]))\.){3}(?:(?:25[0-5]|(?:[1-9]|1[0-9]|2[0-4])?[0-9])))))))|(?:(?:::(?:(?:(?:[0-9a-fA-F]{1,4})):){5})(?:(?:(?:(?:(?:[0-9a-fA-F]{1,4})):(?:(?:[0-9a-fA-F]{1,4})))|(?:(?:(?:(?:(?:25[0-5]|(?:[1-9]|1[0-9]|2[0-4])?[0-9]))\.){3}(?:(?:25[0-5]|(?:[1-9]|1[0-9]|2[0-4])?[0-9])))))))|(?:(?:(?:(?:(?:[0-9a-fA-F]{1,4})))?::(?:(?:(?:[0-9a-fA-F]{1,4})):){4})(?:(?:(?:(?:(?:[0-9a-fA-F]{1,4})):(?:(?:[0-9a-fA-F]{1,4})))|(?:(?:(?:(?:(?:25[0-5]|(?:[1-9]|1[0-9]|2[0-4])?[0-9]))\.){3}(?:(?:25[0-5]|(?:[1-9]|1[0-9]|2[0-4])?[0-9])))))))|(?:(?:(?:(?:(?:(?:[0-9a-fA-F]{1,4})):){0,1}(?:(?:[0-9a-fA-F]{1,4})))?::(?:(?:(?:[0-9a-fA-F]{1,4})):){3})(?:(?:(?:(?:(?:[0-9a-fA-F]{1,4})):(?:(?:[0-9a-fA-F]{1,4})))|(?:(?:(?:(?:(?:25[0-5]|(?:[1-9]|1[0-9]|2[0-4])?[0-9]))\.){3}(?:(?:25[0-5]|(?:[1-9]|1[0-9]|2[0-4])?[0-9])))))))|(?:(?:(?:(?:(?:(?:[0-9a-fA-F]{1,4})):){0,2}(?:(?:[0-9a-fA-F]{1,4})))?::(?:(?:(?:[0-9a-fA-F]{1,4})):){2})(?:(?:(?:(?:(?:[0-9a-fA-F]{1,4})):(?:(?:[0-9a-fA-F]{1,4})))|(?:(?:(?:(?:(?:25[0-5]|(?:[1-9]|1[0-9]|2[0-4])?[0-9]))\.){3}(?:(?:25[0-5]|(?:[1-9]|1[0-9]|2[0-4])?[0-9])))))))|(?:(?:(?:(?:(?:(?:[0-9a-fA-F]{1,4})):){0,3}(?:(?:[0-9a-fA-F]{1,4})))?::(?:(?:[0-9a-fA-F]{1,4})):)(?:(?:(?:(?:(?:[0-9a-fA-F]{1,4})):(?:(?:[0-9a-fA-F]{1,4})))|(?:(?:(?:(?:(?:25[0-5]|(?:[1-9]|1[0-9]|2[0-4])?[0-9]))\.){3}(?:(?:25[0-5]|(?:[1-9]|1[0-9]|2[0-4])?[0-9])))))))|(?:(?:(?:(?:(?:(?:[0-9a-fA-F]{1,4})):){0,4}(?:(?:[0-9a-fA-F]{1,4})))?::)(?:(?:(?:(?:(?:[0-9a-fA-F]{1,4})):(?:(?:[0-9a-fA-F]{1,4})))|(?:(?:(?:(?:(?:25[0-5]|(?:[1-9]|1[0-9]|2[0-4])?[0-9]))\.){3}(?:(?:25[0-5]|(?:[1-9]|1[0-9]|2[0-4])?[0-9])))))))|(?:(?:(?:(?:(?:(?:[0-9a-fA-F]{1,4})):){0,5}(?:(?:[0-9a-fA-F]{1,4})))?::)(?:(?:[0-9a-fA-F]{1,4})))|(?:(?:(?:(?:(?:(?:[0-9a-fA-F]{1,4})):){0,6}(?:(?:[0-9a-fA-F]{1,4})))?::)))))$`)
+// ipAddressValidator validates the address of a nameserver: an IPv4 or IPv6
+// address in a form PowerDNS accepts as A or AAAA content. It rejects
+// hostnames (also ones made of hex digits only, like "cafe"), IPv6 zones
+// ("fe80::1%eth0") and IPv4-mapped IPv6 addresses ("::ffff:192.0.2.1"),
+// which would be written as A record.
+type ipAddressValidator struct{}
+
+func (v ipAddressValidator) Description(context.Context) string {
+	return "must be an IPv4 or IPv6 address"
+}
+
+func (v ipAddressValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (v ipAddressValidator) ValidateString(_ context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	address := req.ConfigValue.ValueString()
+
+	var problem string
+	switch addr, err := netip.ParseAddr(address); {
+	case err != nil:
+		problem = "it is not an IPv4 or IPv6 address"
+	case addr.Zone() != "":
+		problem = "IPv6 zones are not supported"
+	case addr.Is4In6():
+		problem = fmt.Sprintf("it is an IPv4-mapped IPv6 address, use the IPv4 address %s", addr.Unmap())
+	default:
+		return
+	}
+	resp.Diagnostics.AddAttributeError(req.Path, "Invalid IP address",
+		fmt.Sprintf("%q is not a valid nameserver address: %s.", address, problem))
+}
 
 // TODO: Further DNSSec functionality?
 // TODO: Support for other kinds Like slave or master
@@ -163,7 +198,7 @@ func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 							Optional:    true,
 							Description: "The IP Address of the nameserver. The provider manages it as the A (IPv4) or AAAA (IPv6) glue record at the hostname, holding exactly this address, so it can only be set for nameservers inside the zone. If that record is changed, extended or removed outside of Terraform, the next plan shows the difference and the apply restores it.",
 							Validators: []validator.String{
-								stringvalidator.RegexMatches(IP_REGEX, "The passed string is not a valid IPv4 or valid IPv6 Address"),
+								ipAddressValidator{},
 							},
 						},
 					},
@@ -538,7 +573,7 @@ func createZoneFromData(ctx context.Context, data ZoneResourceModel) (pdns_clien
 
 		parsedIP := net.ParseIP(*nameserver.Address)
 		if parsedIP == nil {
-			zoneDiags = append(zoneDiags, diag.NewAttributeErrorDiagnostic(path.Root("nameservers").AtListIndex(index).AtMapKey("address"), "Parse Error", "Invalid IPv4 or IPv6 address"))
+			zoneDiags = append(zoneDiags, diag.NewAttributeErrorDiagnostic(path.Root("nameservers").AtListIndex(index).AtName("address"), "Parse Error", "Invalid IPv4 or IPv6 address"))
 			return pdns_client.PDNSZone{}, "", zoneDiags
 		}
 

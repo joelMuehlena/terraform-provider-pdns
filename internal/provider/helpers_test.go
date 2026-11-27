@@ -364,6 +364,50 @@ func TestDNSNameValidator(t *testing.T) {
 	}
 }
 
+func TestIPAddressValidator(t *testing.T) {
+	t.Parallel()
+	tests := map[string]bool{ // address -> valid
+		"10.0.0.1":             true,
+		"192.0.2.255":          true,
+		"2001:db8::1":          true,
+		"2001:0DB8:0::1":       true,
+		"::1":                  true,
+		"cafe":                 false,
+		"dead.beef":            false,
+		"ns1.example.com":      false,
+		"":                     false,
+		"10.0.0":               false,
+		"10.0.0.256":           false,
+		"010.0.0.1":            false,
+		"10.0.0.1/24":          false,
+		" 10.0.0.1":            false,
+		"fe80::1%eth0":         false,
+		"::ffff:10.0.0.1":      false,
+		"2001:db8::1::2":       false,
+		"[2001:db8::1]":        false,
+		"2001:db8::g":          false,
+		"10.0.0.1:53":          false,
+		"0x0a.0.0.1":           false,
+		"1.2.3.4.5":            false,
+		"::ffff:a00:1":         false,
+		"2001:db8:0:0:0:0:2:1": true,
+	}
+	for address, valid := range tests {
+		resp := &validator.StringResponse{}
+		ipAddressValidator{}.ValidateString(context.Background(), validator.StringRequest{Path: path.Root("address"), ConfigValue: types.StringValue(address)}, resp)
+		if resp.Diagnostics.HasError() == valid {
+			t.Errorf("%q: error = %v, want valid = %v", address, resp.Diagnostics, valid)
+		}
+	}
+	for _, v := range []types.String{types.StringNull(), types.StringUnknown()} {
+		resp := &validator.StringResponse{}
+		ipAddressValidator{}.ValidateString(context.Background(), validator.StringRequest{Path: path.Root("address"), ConfigValue: v}, resp)
+		if resp.Diagnostics.HasError() {
+			t.Errorf("%s: unexpected error %v", v, resp.Diagnostics)
+		}
+	}
+}
+
 func TestRelativeName(t *testing.T) {
 	t.Parallel()
 	tests := []struct{ name, zone, want string }{
@@ -822,9 +866,12 @@ func TestCreateZoneFromDataInvalidAddress(t *testing.T) {
 		RName: types.StringValue("hostmaster"), Refresh: types.Int64Value(1), Retry: types.Int64Value(1),
 		Expire: types.Int64Value(1), TTL: types.Int64Value(1), CreateRecord: types.BoolValue(true),
 	}
-	_, _, diags := createZoneFromData(context.Background(), zoneModel(t, []Nameserver{{Hostname: "ns1", Address: new("bad")}}, soa))
+	_, _, diags := createZoneFromData(context.Background(), zoneModel(t, []Nameserver{{Hostname: "ns1"}, {Hostname: "ns2", Address: new("bad")}}, soa))
 	if !diags.HasError() {
 		t.Fatal("expected error for invalid address")
+	}
+	if want := path.Root("nameservers").AtListIndex(1).AtName("address"); !diags[0].(diag.DiagnosticWithPath).Path().Equal(want) {
+		t.Errorf("error path = %s, want %s", diags[0].(diag.DiagnosticWithPath).Path(), want)
 	}
 }
 
