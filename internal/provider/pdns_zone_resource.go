@@ -517,9 +517,7 @@ func (r *ZoneResource) Update(ctx context.Context, req resource.UpdateRequest, r
 			return
 		}
 
-		addedOrChanged, deleted := Diff(newNameservers, currentNameservers)
-
-		nsRecords, diags := nameserverRecordChanges(ctx, addedOrChanged, deleted, plan.Name.ValueString())
+		nsRecords, diags := nameserverRecordChanges(ctx, newNameservers, currentNameservers, plan.Name.ValueString())
 		resp.Diagnostics.Append(diags...)
 		if resp.Diagnostics.HasError() {
 			return
@@ -884,40 +882,58 @@ func addressRecordType(address string) (string, bool) {
 	return "AAAA", true
 }
 
-// nameserverRecordChanges builds the A/AAAA rrset changes for added or changed
-// and for removed nameservers.
-func nameserverRecordChanges(ctx context.Context, addedOrChanged, deleted []Nameserver, zoneName string) ([]pdns_client.Rrset, diag.Diagnostics) {
+// nameserverRecordChanges builds the A/AAAA (glue) rrset changes from the
+// current to the planned nameservers: glue of added or changed nameservers is
+// written, and glue that is no longer needed is deleted. That is the glue of
+// removed nameservers, and of nameservers whose address was removed or changed
+// to the other address family (Diff reports both as changed).
+func nameserverRecordChanges(ctx context.Context, planned, current []Nameserver, zoneName string) ([]pdns_client.Rrset, diag.Diagnostics) {
 	var diags diag.Diagnostics
+	addedOrChanged, deleted := Diff(planned, current)
+	previous := lo.KeyBy(current, func(ns Nameserver) string { return ns.Hostname })
 	records := make([]pdns_client.Rrset, 0, len(addedOrChanged)+len(deleted))
 
 	for i, nameserver := range addedOrChanged {
+		var recordType string
 		if nameserver.Address == nil {
 			tflog.Info(ctx, "Skipping nameserver A or AAAA record, because Address is not set.", map[string]any{"path": path.Root("nameservers[" + strconv.Itoa(i) + "]").String()})
-			continue
-		}
+		} else {
+			var ok bool
+			recordType, ok = addressRecordType(*nameserver.Address)
+			if !ok {
+				diags.AddAttributeError(path.Root("nameservers["+strconv.Itoa(i)+"]"), "Parse Error", "Found invalid IPv4 or IPv6 address")
+				return nil, diags
+			}
 
-		recordType, ok := addressRecordType(*nameserver.Address)
-		if !ok {
-			diags.AddAttributeError(path.Root("nameservers["+strconv.Itoa(i)+"]"), "Parse Error", "Found invalid IPv4 or IPv6 address")
-			return nil, diags
-		}
-
-		records = append(records, pdns_client.Rrset{
-			Type:       recordType,
-			Changetype: "REPLACE",
-			Name:       fqdn(nameserver.Hostname, zoneName),
-			Records: []pdns_client.Record{
-				{
-					Content: *nameserver.Address,
+			records = append(records, pdns_client.Rrset{
+				Type:       recordType,
+				Changetype: "REPLACE",
+				Name:       fqdn(nameserver.Hostname, zoneName),
+				Records: []pdns_client.Record{
+					{
+						Content: *nameserver.Address,
+					},
 				},
-			},
-		})
+			})
+		}
+
+		// The glue of the previous address is orphaned unless it was just
+		// replaced by a record of the same type.
+		if prev, ok := previous[nameserver.Hostname]; ok && prev.Address != nil {
+			if prevType, ok := addressRecordType(*prev.Address); ok && prevType != recordType {
+				records = append(records, pdns_client.Rrset{
+					Type:       prevType,
+					Changetype: "DELETE",
+					Name:       fqdn(nameserver.Hostname, zoneName),
+				})
+			}
+		}
 	}
 
 	for i, nameserver := range deleted {
 		if nameserver.Address == nil {
-			diags.AddAttributeError(path.Root("nameservers["+strconv.Itoa(i)+"]"), "Parse Error", "Address in removed nameserver is null")
-			return nil, diags
+			// No address, so there is no glue record to delete.
+			continue
 		}
 
 		recordType, ok := addressRecordType(*nameserver.Address)
