@@ -24,7 +24,7 @@ provider "pdns" {
 ### Required
 
 - `api_key` (String, Sensitive) API Key to authenticate against the PowerDNS server
-- `endpoint` (String) API Endpoint of the the PowerDNS Auth API-Server
+- `endpoint` (String) API Endpoint of the the PowerDNS Auth API-Server: its base URL, without `/api/v1` (a trailing slash is ignored). Before the first request the provider checks that `server_id` exists there and fails otherwise.
 
 ### Optional
 

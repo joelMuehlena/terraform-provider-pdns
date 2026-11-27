@@ -100,6 +100,10 @@ func (f *fakePDNS) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if r.URL.EscapedPath() == "/api/v1/servers/localhost" && r.Method == http.MethodGet {
+		writeJSON(w, http.StatusOK, map[string]string{"id": "localhost", "type": "Server", "daemon_type": "authoritative"})
+		return
+	}
 	rest, ok := strings.CutPrefix(r.URL.EscapedPath(), "/api/v1/servers/localhost/")
 	if !ok {
 		writeError(w, http.StatusNotFound, "Not Found")

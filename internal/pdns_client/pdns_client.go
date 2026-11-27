@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-log/tflog"
@@ -19,17 +20,84 @@ type PDNSClient struct {
 	serverID   string
 	apiKey     string
 	endpoint   string
+
+	// checkServer makes the first request verify that serverID exists at
+	// endpoint, see WithServerCheck. serverMu guards serverChecked.
+	checkServer   bool
+	serverMu      sync.Mutex
+	serverChecked bool
 }
 
-func NewPDNSClient(httpClient *http.Client, endpoint string, serverID string, apiKey string) *PDNSClient {
+// Option configures a PDNSClient.
+type Option func(*PDNSClient)
+
+// WithServerCheck makes the client verify, before its first request, that
+// the server exists (GET /api/v1/servers/{server_id}). PowerDNS answers a
+// request to an unknown server or a wrong API path with the same 404 as one
+// for an unknown zone or TSIG key, so without the check a misconfigured
+// endpoint or server_id looks like every object was deleted. A successful
+// check is remembered; a failed one is repeated on the next request.
+func WithServerCheck() Option {
+	return func(c *PDNSClient) { c.checkServer = true }
+}
+
+// NewPDNSClient returns a client for the PowerDNS API at endpoint (the base
+// URL, without /api/v1; a trailing slash is ignored).
+func NewPDNSClient(httpClient *http.Client, endpoint string, serverID string, apiKey string, opts ...Option) *PDNSClient {
 	client := &PDNSClient{
 		httpClient: httpClient,
 		serverID:   serverID,
 		apiKey:     apiKey,
-		endpoint:   endpoint,
+		endpoint:   strings.TrimRight(endpoint, "/"),
+	}
+	for _, opt := range opts {
+		opt(client)
 	}
 
 	return client
+}
+
+// serverURL is the URL of the server resource, GET /api/v1/servers/{id}.
+func (client *PDNSClient) serverURL() string {
+	return client.endpoint + "/api/v1/servers/" + url.PathEscape(client.serverID)
+}
+
+// ensureServer verifies once that the configured server exists, see
+// WithServerCheck.
+func (client *PDNSClient) ensureServer(ctx context.Context) error {
+	if !client.checkServer {
+		return nil
+	}
+	client.serverMu.Lock()
+	defer client.serverMu.Unlock()
+	if client.serverChecked {
+		return nil
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, client.serverURL(), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Add("X-API-Key", client.apiKey)
+	resp, err := client.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	switch resp.StatusCode {
+	case http.StatusOK:
+		_, _ = io.Copy(io.Discard, resp.Body)
+		client.serverChecked = true
+		return nil
+	case http.StatusUnauthorized:
+		return &PDNSUnauthorizedError{}
+	case http.StatusNotFound:
+		return &PDNSServerNotFoundError{ServerID: client.serverID, Endpoint: client.endpoint}
+	default:
+		data, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("checking server %q at %s: unexpected status code %d: %s", client.serverID, client.endpoint, resp.StatusCode, data)
+	}
 }
 
 type PDNSZone struct {
@@ -84,7 +152,7 @@ func (client *PDNSClient) getReq(ctx context.Context, method string, apiPath str
 	req, err := http.NewRequestWithContext(
 		ctx,
 		method,
-		client.endpoint+"/api/v1/servers/"+client.serverID+"/"+apiPath,
+		client.serverURL()+"/"+apiPath,
 		body,
 	)
 	if err != nil {
@@ -108,6 +176,10 @@ func (client *PDNSClient) getReq(ctx context.Context, method string, apiPath str
 // (PDNSUnauthorizedError, notFound on 404) or a generic error carrying the
 // response body. Callers that get a non-nil response own closing its body.
 func (client *PDNSClient) do(ctx context.Context, method, apiPath string, notFound error, body io.Reader, wantStatus int) (*http.Response, error) {
+	if err := client.ensureServer(ctx); err != nil {
+		return nil, err
+	}
+
 	req, err := client.getReq(ctx, method, apiPath, body)
 	if err != nil {
 		return nil, err

@@ -244,3 +244,59 @@ func TestProviderInvalidTimeout(t *testing.T) {
 		})
 	}
 }
+
+func serverIDConfig(endpoint, serverID string) string {
+	return `
+provider "pdns" {
+  endpoint  = "` + endpoint + `"
+  api_key   = "` + fakeAPIKey + `"
+  server_id = "` + serverID + `"
+}
+
+resource "pdns_tsig_key" "k" {
+  name = "k"
+  key  = "YWFhYQ=="
+}
+`
+}
+
+// TestProviderWrongServerID checks that a wrong server_id is an error rather
+// than an empty plan: PowerDNS answers requests to an unknown server with
+// the same 404 as for a deleted object, which would drop every resource from
+// the state (and make destroy a no-op).
+func TestProviderWrongServerID(t *testing.T) {
+	t.Parallel()
+	fake := newFakePDNS(t)
+	wrongServer := regexp.MustCompile(`server_id "wrong"\s+not\s+found`)
+
+	tfresource.UnitTest(t, tfresource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		CheckDestroy:             checkFakeKeyGone(fake, "k"),
+		Steps: []tfresource.TestStep{
+			{
+				// A trailing slash on the endpoint is ignored.
+				Config: serverIDConfig(fake.srv.URL+"/", "localhost"),
+				Check:  checkFakeKey(fake, "k", "hmac-sha256", "YWFhYQ=="),
+			},
+			{
+				// Refreshing the existing key fails instead of removing it.
+				Config:      serverIDConfig(fake.srv.URL, "wrong"),
+				ExpectError: wrongServer,
+			},
+			{
+				// The key is still in the state and on the server.
+				Config:   serverIDConfig(fake.srv.URL, "localhost"),
+				PlanOnly: true,
+			},
+		},
+	})
+
+	// Creating with a wrong server_id fails too.
+	tfresource.UnitTest(t, tfresource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []tfresource.TestStep{{
+			Config:      serverIDConfig(newFakePDNS(t).srv.URL, "wrong"),
+			ExpectError: wrongServer,
+		}},
+	})
+}
