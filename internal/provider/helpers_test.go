@@ -977,3 +977,41 @@ func TestSleepCtx(t *testing.T) {
 		t.Errorf("sleepCtx on cancelled ctx = %v", err)
 	}
 }
+
+func TestValidateUniqueNameservers(t *testing.T) {
+	t.Parallel()
+	soa := SOAModel{
+		RName: types.StringValue("hostmaster"), Refresh: types.Int64Value(1), Retry: types.Int64Value(1),
+		Expire: types.Int64Value(1), TTL: types.Int64Value(1), CreateRecord: types.BoolValue(true),
+	}
+	tests := map[string]struct {
+		hostnames []string
+		wantPaths []path.Path
+	}{
+		"distinct":            {[]string{"ns1", "ns2", "ns1.other.org.", "ns1.example.com.other.org."}, nil},
+		"relative and fqdn":   {[]string{"ns1", "ns1.example.com."}, []path.Path{path.Root("nameservers").AtListIndex(1).AtName("hostname")}},
+		"case":                {[]string{"NS1", "ns2", "ns1"}, []path.Path{path.Root("nameservers").AtListIndex(2).AtName("hostname")}},
+		"out of zone, thrice": {[]string{"ns.other.org.", "NS.other.org.", "ns.other.org"}, []path.Path{path.Root("nameservers").AtListIndex(1).AtName("hostname")}},
+	}
+	for name, tt := range tests {
+		data := zoneModel(t, lo.Map(tt.hostnames, func(h string, _ int) Nameserver { return Nameserver{Hostname: h} }), soa)
+		diags := validateUniqueNameservers(data)
+		got := lo.Map(diags.Errors(), func(d diag.Diagnostic, _ int) path.Path { return d.(diag.DiagnosticWithPath).Path() })
+		if len(got) != len(tt.wantPaths) {
+			t.Errorf("%s: errors at %v, want %v", name, got, tt.wantPaths)
+			continue
+		}
+		for i := range got {
+			if !got[i].Equal(tt.wantPaths[i]) {
+				t.Errorf("%s: errors at %v, want %v", name, got, tt.wantPaths)
+			}
+		}
+	}
+
+	// An unknown zone name is not validated.
+	data := zoneModel(t, []Nameserver{{Hostname: "ns1"}, {Hostname: "ns1"}}, soa)
+	data.Name = types.StringUnknown()
+	if diags := validateUniqueNameservers(data); diags.HasError() {
+		t.Errorf("unknown zone name: %v", diags)
+	}
+}

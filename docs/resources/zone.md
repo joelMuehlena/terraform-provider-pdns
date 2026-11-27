@@ -50,7 +50,7 @@ resource "pdns_zone" "example_com" {
 ### Required
 
 - `name` (String) The Name of the zone to be created. Must end with a dot
-- `nameservers` (Attributes List) The nameservers of the Zone (see [below for nested schema](#nestedatt--nameservers))
+- `nameservers` (Attributes List) The nameservers of the Zone. Each nameserver can only be listed once (hostnames are compared fully qualified and case-insensitively), so it has at most one glue `address`; dual-stack glue (both an A and an AAAA record) is not supported. (see [below for nested schema](#nestedatt--nameservers))
 - `soa` (Attributes) The Start Of Authority (SOA) record parameters for the zone. (see [below for nested schema](#nestedatt--soa))
 
 ### Optional
