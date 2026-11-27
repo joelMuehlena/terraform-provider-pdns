@@ -122,3 +122,37 @@ func (v dnsNameValidator) ValidateString(_ context.Context, req validator.String
 	resp.Diagnostics.AddAttributeError(req.Path, "Invalid DNS name",
 		fmt.Sprintf("%q is not a valid name: %s. Give it relative to the zone (\"ns1\") or fully qualified with a trailing dot (\"ns1.example.com.\").", name, problem))
 }
+
+// rnameValidator rejects an rname written as email address
+// ("hostmaster@example.com"): the SOA record holds the mailbox as DNS name,
+// with the "@" replaced by a dot ("hostmaster.example.com."). A lone "@" is
+// left to dnsNameValidator.
+type rnameValidator struct{}
+
+func (v rnameValidator) Description(context.Context) string {
+	return `must be the mailbox as DNS name ("hostmaster.example.com."), not an email address with "@"`
+}
+
+func (v rnameValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (v rnameValidator) ValidateString(_ context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	rname := req.ConfigValue.ValueString()
+	at := strings.LastIndex(rname, "@")
+	if rname == "@" || at < 0 {
+		return
+	}
+
+	local, domain := rname[:at], strings.TrimSuffix(rname[at+1:], ".")
+	hint := `"user.example.com."`
+	if local != "" && domain != "" && !strings.Contains(local, "@") {
+		hint = fmt.Sprintf("%q", strings.ReplaceAll(local, ".", `\.`)+"."+domain+".")
+	}
+	resp.Diagnostics.AddAttributeError(req.Path, "Invalid rname",
+		fmt.Sprintf("%q contains \"@\": the rname is the administrator's mailbox written as DNS name, with the \"@\" replaced by a dot "+
+			"(and dots before it escaped as \"\\.\"). Write %s instead.", rname, hint))
+}

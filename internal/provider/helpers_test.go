@@ -582,13 +582,32 @@ func TestNameserverRecordChanges(t *testing.T) {
 		}
 	}
 
-	errorCases := map[string]struct{ planned, current []Nameserver }{
-		"invalid added address":   {planned: []Nameserver{{Hostname: "ns1", Address: new("bad")}}},
-		"invalid deleted address": {current: []Nameserver{{Hostname: "ns1", Address: new("bad")}}},
+	// Errors of planned nameservers point at their index in the
+	// configuration, not in the list of changes.
+	errorCases := map[string]struct {
+		planned, current []Nameserver
+		wantPath         path.Path
+	}{
+		"invalid added address": {
+			planned:  []Nameserver{{Hostname: "ns1", Address: new("10.0.0.1")}, {Hostname: "ns2"}, {Hostname: "ns3", Address: new("bad")}},
+			current:  []Nameserver{{Hostname: "ns1", Address: new("10.0.0.1")}, {Hostname: "ns2"}},
+			wantPath: path.Root("nameservers").AtListIndex(2).AtName("address"),
+		},
+		// Removed nameservers are not in the configuration.
+		"invalid deleted address": {current: []Nameserver{{Hostname: "ns1", Address: new("bad")}}, wantPath: path.Empty()},
 	}
 	for name, tc := range errorCases {
-		if _, diags := nameserverRecordChanges(ctx, tc.planned, tc.current, "example.com.", 300, false); !diags.HasError() {
+		_, diags := nameserverRecordChanges(ctx, tc.planned, tc.current, "example.com.", 300, false)
+		if !diags.HasError() {
 			t.Errorf("%s: expected error", name)
+			continue
+		}
+		var got path.Path
+		if d, ok := diags.Errors()[0].(diag.DiagnosticWithPath); ok {
+			got = d.Path()
+		}
+		if got.String() != tc.wantPath.String() {
+			t.Errorf("%s: error path = %q, want %q", name, got, tc.wantPath)
 		}
 	}
 }
@@ -772,6 +791,14 @@ func TestReadSOAImport(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("%s: soa = %+v, want %+v", name, got, tt.want)
 		}
+	}
+
+	// The zone name is compared like DNS.
+	zone := pdns_client.PDNSZone{Name: "example.com.", Rrsets: []pdns_client.Rrset{
+		{Type: "SOA", Name: "Example.COM", Records: []pdns_client.Record{{Content: "ns1.example.com. admin.example.com. 1 10 20 30 40"}}},
+	}}
+	if obj, diags := readSOA(ctx, zone, null); diags.HasError() || obj.IsNull() {
+		t.Errorf("SOA record in other spelling not found: %v, %v", obj, diags)
 	}
 
 	// Without a SOA record the attribute stays as it is.
@@ -1013,5 +1040,39 @@ func TestValidateUniqueNameservers(t *testing.T) {
 	data.Name = types.StringUnknown()
 	if diags := validateUniqueNameservers(data); diags.HasError() {
 		t.Errorf("unknown zone name: %v", diags)
+	}
+}
+
+func TestRNameValidator(t *testing.T) {
+	t.Parallel()
+	tests := map[string]string{ // rname -> suggested spelling, "" if valid
+		"hostmaster":              "",
+		"hostmaster.example.com.": "",
+		`john\.doe.example.com.`:  "",
+		"@":                       "", // left to dnsNameValidator
+		"user@domain":             `"user.domain."`,
+		"hostmaster@example.com.": `"hostmaster.example.com."`,
+		"john.doe@example.com":    `"john\\.doe.example.com."`,
+		"@example.com":            `"user.example.com."`,
+		"user@":                   `"user.example.com."`,
+		"a@b@example.com":         `"user.example.com."`,
+	}
+	for rname, hint := range tests {
+		resp := &validator.StringResponse{}
+		rnameValidator{}.ValidateString(context.Background(), validator.StringRequest{Path: path.Root("rname"), ConfigValue: types.StringValue(rname)}, resp)
+		if resp.Diagnostics.HasError() != (hint != "") {
+			t.Errorf("%q: error = %v, want error %v", rname, resp.Diagnostics, hint != "")
+			continue
+		}
+		if hint != "" && !strings.Contains(resp.Diagnostics.Errors()[0].Detail(), "Write "+hint+" instead") {
+			t.Errorf("%q: detail %q does not suggest %s", rname, resp.Diagnostics.Errors()[0].Detail(), hint)
+		}
+	}
+	for _, v := range []types.String{types.StringNull(), types.StringUnknown()} {
+		resp := &validator.StringResponse{}
+		rnameValidator{}.ValidateString(context.Background(), validator.StringRequest{Path: path.Root("rname"), ConfigValue: v}, resp)
+		if resp.Diagnostics.HasError() {
+			t.Errorf("%s: unexpected error %v", v, resp.Diagnostics)
+		}
 	}
 }
