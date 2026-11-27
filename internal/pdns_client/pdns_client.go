@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net/http"
 	"net/url"
 	"strings"
@@ -27,6 +28,11 @@ type PDNSClient struct {
 	checkServer   bool
 	serverMu      sync.Mutex
 	serverChecked bool
+
+	// randInt64N and sleep are the random source and the wait of the PATCH
+	// retry backoff, replaced in tests. nil means rand.Int64N and sleepCtx.
+	randInt64N func(n int64) int64
+	sleep      func(ctx context.Context, d time.Duration) error
 }
 
 // Option configures a PDNSClient.
@@ -327,6 +333,36 @@ func (client *PDNSClient) UpdateZoneMasters(ctx context.Context, zoneID string, 
 // failed because of a database deadlock.
 const patchDeadlockRetries = 4
 
+// patchRetryBaseDelay is the mean wait before the first PATCH retry; the
+// mean grows linearly with each retry, see patchRetryDelay.
+const patchRetryBaseDelay = 100 * time.Millisecond
+
+// patchRetryDelay returns the wait before PATCH retry number retry (1-based):
+// a random duration in [retry*base/2, retry*base*3/2). The jitter spreads out
+// the retries of writers that deadlocked together, which would otherwise
+// retry at the same moment and deadlock again; the mean, and so the total
+// time spent waiting, is that of a fixed retry*base backoff.
+func (client *PDNSClient) patchRetryDelay(retry int) time.Duration {
+	randInt64N := client.randInt64N
+	if randInt64N == nil {
+		randInt64N = rand.Int64N
+	}
+	mean := time.Duration(retry) * patchRetryBaseDelay
+	return mean/2 + time.Duration(randInt64N(int64(mean)))
+}
+
+// sleepCtx waits for d, or until ctx is done, which it returns the error of.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
 // isPatchDeadlock reports whether a failed rrset PATCH looks like a gpgsql
 // deadlock between concurrent PATCHes of the same zone. Because the client
 // asks for JSON (see newRequest), PowerDNS includes the backend message in
@@ -378,7 +414,7 @@ func isGenericInternalServerError(body string) bool {
 // UpdateZoneRecords applies rrset changes to a zone. The gpgsql backend fails
 // concurrent PATCHes of the same zone with database deadlocks (see
 // isPatchDeadlock); REPLACE and DELETE are idempotent, so such a PATCH is
-// retried with backoff.
+// retried with a jittered backoff (see patchRetryDelay).
 func (client *PDNSClient) UpdateZoneRecords(ctx context.Context, zoneID string, rrsets []Rrset) error {
 	data, err := json.Marshal(PDNSZone{Rrsets: rrsets})
 	if err != nil {
@@ -394,11 +430,14 @@ func (client *PDNSClient) UpdateZoneRecords(ctx context.Context, zoneID string, 
 		if attempt >= patchDeadlockRetries || !isPatchDeadlock(err) {
 			return err
 		}
-		tflog.Debug(ctx, "Retrying rrset PATCH after a database deadlock", map[string]any{"zone": zoneID, "attempt": attempt + 1})
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Duration(attempt+1) * 100 * time.Millisecond):
+		delay := client.patchRetryDelay(attempt + 1)
+		tflog.Debug(ctx, "Retrying rrset PATCH after a database deadlock", map[string]any{"zone": zoneID, "attempt": attempt + 1, "delay": delay.String()})
+		sleep := client.sleep
+		if sleep == nil {
+			sleep = sleepCtx
+		}
+		if err := sleep(ctx, delay); err != nil {
+			return err
 		}
 	}
 }
