@@ -556,6 +556,8 @@ func TestZoneResourceErrors(t *testing.T) {
 		"rname empty label":    {`nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = { rname = "host..master" }`, `empty label`},
 		"masters on Native":    {`masters = ["192.0.2.1"]` + "\n" + `nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = { rname = "h" }`, `masters requires a secondary zone`},
 		"out-of-zone address":  {`nameservers = [{ hostname = "ns1" }, { hostname = "ns2.other.org.", address = "10.0.0.2" }]` + "\n" + `soa = { rname = "h" }`, `ns2.other.org. is not inside the zone\s+example.test.`},
+		"duplicate nameserver": {`nameservers = [{ hostname = "ns1" }, { hostname = "ns2" }, { hostname = "NS1.example.test." }]` + "\n" + `soa = { rname = "h" }`, `NS1.example.test. is listed more than once \(at\s+index 0 and 2\)`},
+		"dual-stack glue":      {`nameservers = [{ hostname = "ns1", address = "10.0.0.1" }, { hostname = "ns1", address = "2001:db8::1" }]` + "\n" + `soa = { rname = "h" }`, `Duplicate nameserver`},
 		"invalid primary":      {`kind = "Slave"` + "\n" + `masters = ["primary.example.org"]` + "\n" + `nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = { rname = "h" }`, `Invalid primary`},
 	}
 	for name, tt := range validation {

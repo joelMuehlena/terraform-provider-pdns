@@ -180,7 +180,7 @@ func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				Computed:            true,
 			},
 			"nameservers": schema.ListNestedAttribute{
-				MarkdownDescription: "The nameservers of the Zone",
+				MarkdownDescription: "The nameservers of the Zone. Each nameserver can only be listed once (hostnames are compared fully qualified and case-insensitively), so it has at most one glue `address`; dual-stack glue (both an A and an AAAA record) is not supported.",
 				Required:            true,
 				Validators: []validator.List{
 					listvalidator.SizeAtLeast(1),
@@ -310,6 +310,41 @@ func (r *ZoneResource) ValidateConfig(ctx context.Context, req resource.Validate
 
 	resp.Diagnostics.Append(validateMasters(data)...)
 	resp.Diagnostics.Append(validateNameserverAddresses(data)...)
+	resp.Diagnostics.Append(validateUniqueNameservers(data)...)
+}
+
+// validateUniqueNameservers rejects nameservers listed more than once, in
+// any spelling of their hostname ("ns1", "ns1.example.com.", "NS1"): the NS
+// rrset cannot hold a record twice (PowerDNS fails the apply with 422
+// "Duplicate record"), and one nameserver cannot have two glue addresses.
+func validateUniqueNameservers(data ZoneResourceModel) diag.Diagnostics {
+	var diags diag.Diagnostics
+	if data.Name.IsNull() || data.Name.IsUnknown() {
+		return diags
+	}
+	zone := data.Name.ValueString()
+
+	first := map[string]int{}
+	for i, element := range data.Nameservers.Elements() {
+		nameserver, ok := element.(types.Object)
+		if !ok || nameserver.IsNull() || nameserver.IsUnknown() {
+			continue
+		}
+		hostname, _ := nameserver.Attributes()["hostname"].(types.String)
+		if hostname.IsNull() || hostname.IsUnknown() {
+			continue
+		}
+		key := nameserverKey(hostname.ValueString(), zone)
+		j, seen := first[key]
+		if !seen {
+			first[key] = i
+			continue
+		}
+		diags.AddAttributeError(path.Root("nameservers").AtListIndex(i).AtName("hostname"), "Duplicate nameserver",
+			fmt.Sprintf("The nameserver %s is listed more than once (at index %d and %d). Each nameserver can only be listed once; "+
+				"a nameserver with both an IPv4 and an IPv6 address (dual-stack glue) is not supported.", fqdn(hostname.ValueString(), zone), j, i))
+	}
+	return diags
 }
 
 // validateNameserverAddresses rejects addresses of nameservers outside the
