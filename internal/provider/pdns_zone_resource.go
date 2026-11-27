@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -55,6 +56,8 @@ type ZoneResourceModel struct {
 	Kind        types.String `tfsdk:"kind"`
 	SOA         types.Object `tfsdk:"soa"`
 	DNSSec      types.Bool   `tfsdk:"dnssec"`
+	// TTL is the TTL of the SOA, NS and glue rrsets.
+	TTL types.Int64 `tfsdk:"ttl"`
 	// LockDNSUpdate keeps the dnsupdate lock placeholder in the zone.
 	LockDNSUpdate types.Bool `tfsdk:"lock_dnsupdate"`
 }
@@ -166,6 +169,18 @@ func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 					},
 				},
 			},
+			"ttl": schema.Int64Attribute{
+				MarkdownDescription: "The TTL (in seconds) of the records the provider writes for the zone: the SOA record, the NS records " +
+					"at the zone apex and the A/AAAA (glue) records of the nameservers with an `address`. Changes are applied in place. " +
+					"It is read back from the SOA record (from the NS records with `soa.create_record = false`). Not to be confused with " +
+					"`soa.ttl`, the negative caching TTL. Defaults to `" + strconv.Itoa(defaultZoneTTL) + "`.",
+				Optional: true,
+				Computed: true,
+				Default:  int64default.StaticInt64(defaultZoneTTL),
+				Validators: []validator.Int64{
+					int64validator.AtLeast(1),
+				},
+			},
 			"kind": schema.StringAttribute{
 				MarkdownDescription: "The zone kind. One of `Native`, `Master`, `Slave`, `Producer` or `Consumer`. Defaults to `Native`.",
 				Optional:            true,
@@ -240,7 +255,7 @@ func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 						Computed:    true,
 					},
 					"ttl": schema.Int64Attribute{
-						Description: "TTL of the zone data",
+						Description: "The MINIMUM field of the SOA record: the TTL (in seconds) resolvers cache negative answers (NXDOMAIN, NODATA) of the zone for (RFC 2308). It is not the TTL of the records; see the zone's `ttl` for that.",
 						Optional:    true,
 						Default:     int64default.StaticInt64(defaultSOATTL),
 						Computed:    true,
@@ -489,6 +504,7 @@ func createZoneFromData(ctx context.Context, data ZoneResourceModel) (pdns_clien
 		return pdns_client.PDNSZone{}, "", zoneDiags
 	}
 	soa.RName = fqdn(soa.RName, name)
+	ttl := data.TTL.ValueInt64()
 
 	nameservers = lo.Map(nameservers, func(item Nameserver, index int) Nameserver {
 		item.Hostname = fqdn(item.Hostname, name)
@@ -507,8 +523,11 @@ func createZoneFromData(ctx context.Context, data ZoneResourceModel) (pdns_clien
 
 	serial := time.Now().Format("20060102") + "01"
 	if soa.CreateRecord {
-		records = append(records, soaRrset(soa, nameservers[0].Hostname, name, serial))
+		records = append(records, soaRrset(soa, nameservers[0].Hostname, name, serial, ttl))
 	}
+	// The NS rrset is sent as an rrset rather than as the zone's nameservers,
+	// for which PowerDNS uses its default-ttl.
+	records = append(records, nsRrset(nameservers, name, ttl))
 
 	for index, nameserver := range nameservers {
 		if nameserver.Address == nil {
@@ -532,6 +551,7 @@ func createZoneFromData(ctx context.Context, data ZoneResourceModel) (pdns_clien
 		records = append(records, pdns_client.Rrset{
 			Type: recordType,
 			Name: nameserver.Hostname,
+			TTL:  ttl,
 			Records: []pdns_client.Record{
 				{
 					Content: *nameserver.Address,
@@ -544,9 +564,6 @@ func createZoneFromData(ctx context.Context, data ZoneResourceModel) (pdns_clien
 		Name:   name,
 		Kind:   data.Kind.ValueString(),
 		Dnssec: data.DNSSec.ValueBool(),
-		Nameservers: lo.Map(nameservers, func(item Nameserver, index int) string {
-			return item.Hostname
-		}),
 		Rrsets: records,
 	}
 	if diags := data.Masters.ElementsAs(ctx, &newZone.Masters, false); diags.HasError() {
@@ -591,6 +608,7 @@ func (r *ZoneResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 		return
 	}
 	data.SOA = soa
+	data.TTL = readZoneTTL(zone, soa, data.TTL)
 
 	nameservers, diags := readZoneNameservers(ctx, zone, data.Nameservers)
 	resp.Diagnostics.Append(diags...)
@@ -626,8 +644,11 @@ func (r *ZoneResource) Update(ctx context.Context, req resource.UpdateRequest, r
 	}
 	// With create_record = false the SOA record is not managed by the provider.
 	soaChanged := newSoaData.CreateRecord && !state.SOA.Equal(plan.SOA)
+	// A changed ttl rewrites the SOA, NS and glue rrsets.
+	ttlChanged := !state.TTL.Equal(plan.TTL)
+	ttl := plan.TTL.ValueInt64()
 
-	if !state.Nameservers.Equal(plan.Nameservers) || soaChanged {
+	if !state.Nameservers.Equal(plan.Nameservers) || soaChanged || ttlChanged {
 		records := make([]pdns_client.Rrset, 0)
 
 		serial, err := IncreaseSOASerial(state.Serial.ValueString())
@@ -649,26 +670,19 @@ func (r *ZoneResource) Update(ctx context.Context, req resource.UpdateRequest, r
 			return
 		}
 
-		nsRecords, diags := nameserverRecordChanges(ctx, newNameservers, currentNameservers, plan.Name.ValueString())
+		nsRecords, diags := nameserverRecordChanges(ctx, newNameservers, currentNameservers, plan.Name.ValueString(), ttl, ttlChanged)
 		resp.Diagnostics.Append(diags...)
 		if resp.Diagnostics.HasError() {
 			return
 		}
 		records = append(records, nsRecords...)
 
-		records = append(records, pdns_client.Rrset{
-			Type:       "NS",
-			Changetype: "REPLACE",
-			Name:       plan.Name.ValueString(),
-			Records: lo.Map(newNameservers, func(item Nameserver, index int) pdns_client.Record {
-				return pdns_client.Record{
-					Content: fqdn(item.Hostname, plan.Name.ValueString()),
-				}
-			}),
-		})
+		ns := nsRrset(newNameservers, plan.Name.ValueString(), ttl)
+		ns.Changetype = "REPLACE"
+		records = append(records, ns)
 
-		if newSoaData.CreateRecord && (soaChanged || (len(plan.Nameservers.Elements()) >= 1 && len(state.Nameservers.Elements()) == 0) || !state.Nameservers.Elements()[0].Equal(plan.Nameservers.Elements()[0])) {
-			soaRecord := soaRrset(newSoaData, fqdn(newNameservers[0].Hostname, plan.Name.ValueString()), plan.Name.ValueString(), serial)
+		if newSoaData.CreateRecord && (soaChanged || ttlChanged || (len(plan.Nameservers.Elements()) >= 1 && len(state.Nameservers.Elements()) == 0) || !state.Nameservers.Elements()[0].Equal(plan.Nameservers.Elements()[0])) {
+			soaRecord := soaRrset(newSoaData, fqdn(newNameservers[0].Hostname, plan.Name.ValueString()), plan.Name.ValueString(), serial, ttl)
 			soaRecord.Changetype = "REPLACE"
 			records = append(records, soaRecord)
 		}
@@ -762,12 +776,14 @@ func (r *ZoneResource) ImportState(ctx context.Context, req resource.ImportState
 	resource.ImportStatePassthroughID(ctx, path.Root("name"), req, resp)
 }
 
-// soaRrset builds the SOA rrset of a zone. primaryNS and soa.RName must
-// already be fully qualified.
-func soaRrset(soa SOA, primaryNS, zoneName, serial string) pdns_client.Rrset {
+// soaRrset builds the SOA rrset of a zone with the given TTL. primaryNS
+// must already be fully qualified. soa.TTL is the MINIMUM field of the record
+// (the negative caching TTL), not the TTL of the rrset.
+func soaRrset(soa SOA, primaryNS, zoneName, serial string, ttl int64) pdns_client.Rrset {
 	return pdns_client.Rrset{
 		Type: "SOA",
 		Name: zoneName,
+		TTL:  ttl,
 		Records: []pdns_client.Record{
 			{
 				Content: fmt.Sprintf(
@@ -783,6 +799,46 @@ func soaRrset(soa SOA, primaryNS, zoneName, serial string) pdns_client.Rrset {
 			},
 		},
 	}
+}
+
+// nsRrset builds the NS rrset at the apex of a zone with the given TTL.
+func nsRrset(nameservers []Nameserver, zoneName string, ttl int64) pdns_client.Rrset {
+	return pdns_client.Rrset{
+		Type: "NS",
+		Name: zoneName,
+		TTL:  ttl,
+		Records: lo.Map(nameservers, func(item Nameserver, _ int) pdns_client.Record {
+			return pdns_client.Record{Content: fqdn(item.Hostname, zoneName)}
+		}),
+	}
+}
+
+// defaultZoneTTL is the default of the zone's ttl attribute, the TTL of its
+// SOA, NS and glue rrsets.
+const defaultZoneTTL = 3600
+
+// readZoneTTL returns the ttl attribute for the zone, given the soa
+// attribute as read and the current ttl (null on import and in state written
+// by provider versions without it). The provider writes the SOA, NS and glue
+// rrsets with the same TTL, so it is read from the SOA rrset, which zones
+// whose rrsets have differing TTLs (e.g. imported ones) have exactly once.
+// With create_record = false the SOA record is not managed by the provider
+// and the NS rrset is used instead. Without either rrset, current is kept
+// (the default if it is null).
+func readZoneTTL(zone pdns_client.PDNSZone, soa types.Object, current types.Int64) types.Int64 {
+	recordType := "SOA"
+	if createRecord, ok := soa.Attributes()["create_record"].(types.Bool); ok && !createRecord.ValueBool() {
+		recordType = "NS"
+	}
+	if rrset, found := lo.Find(zone.Rrsets, func(rr pdns_client.Rrset) bool {
+		return rr.Type == recordType && sameDNSName(rr.Name, zone.Name)
+	}); found {
+		return types.Int64Value(rrset.TTL)
+	}
+	if current.IsNull() || current.IsUnknown() {
+		return types.Int64Value(defaultZoneTTL)
+	}
+	return current
 }
 
 // pdnsDefaultSOAMName is the primary nameserver of the SOA record PowerDNS
@@ -1095,12 +1151,17 @@ func mastersValue(masters []string, prior types.List) types.List {
 
 // nameserverRecordChanges builds the A/AAAA (glue) rrset changes from the
 // current to the planned nameservers: glue of added or changed nameservers is
-// written, and glue that is no longer needed is deleted. That is the glue of
-// removed nameservers, and of nameservers whose address was removed or changed
-// to the other address family (Diff reports both as changed).
-func nameserverRecordChanges(ctx context.Context, planned, current []Nameserver, zoneName string) ([]pdns_client.Rrset, diag.Diagnostics) {
+// written with the given TTL, and glue that is no longer needed is deleted.
+// That is the glue of removed nameservers, and of nameservers whose address
+// was removed or changed to the other address family (Diff reports both as
+// changed). With rewriteAll (the TTL changed) the glue of every planned
+// nameserver is written.
+func nameserverRecordChanges(ctx context.Context, planned, current []Nameserver, zoneName string, ttl int64, rewriteAll bool) ([]pdns_client.Rrset, diag.Diagnostics) {
 	var diags diag.Diagnostics
 	addedOrChanged, deleted := Diff(planned, current)
+	if rewriteAll {
+		addedOrChanged = planned
+	}
 	previous := lo.KeyBy(current, func(ns Nameserver) string { return ns.Hostname })
 	records := make([]pdns_client.Rrset, 0, len(addedOrChanged)+len(deleted))
 
@@ -1120,6 +1181,7 @@ func nameserverRecordChanges(ctx context.Context, planned, current []Nameserver,
 				Type:       recordType,
 				Changetype: "REPLACE",
 				Name:       fqdn(nameserver.Hostname, zoneName),
+				TTL:        ttl,
 				Records: []pdns_client.Record{
 					{
 						Content: *nameserver.Address,

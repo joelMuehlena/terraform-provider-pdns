@@ -61,6 +61,7 @@ resource "pdns_zone" "example_com" {
 
 On PowerDNS 5.0 and later, prefer the server setting `dnsupdate-require-tsig=yes`: it refuses every update that is not signed by a key listed for the zone, for all zones and from the moment they exist, so this lock is not needed. Use the lock on 4.9 (which does not have the setting) or where the server configuration cannot be changed. The setting applies to every zone of the server; for per-zone control, also on 5.0+, leave `dnsupdate-require-tsig` off and set `lock_dnsupdate = true` only on the zones that must refuse unsigned updates. The placeholder is not a real key: never create a TSIG key named `pdns-provider-dnsupdate-locked` outside the provider (with `pdnsutil` or the API), as it would be allowed to perform dynamic updates of every zone with `lock_dnsupdate = true`. Defaults to `false`.
 - `masters` (List of String) The primaries the zone is transferred from, as IP addresses with an optional port (`192.0.2.1`, `2001:db8::1`, `192.0.2.1:5300` or `[2001:db8::1]:5300`). Only valid for `kind = "Slave"` or `"Consumer"`; such zones are created with their primaries directly, also with `lock_dnsupdate = true` (the temporary `Slave` of a locked create is only used for the other kinds and has no primaries). Changes are applied in place.
+- `ttl` (Number) The TTL (in seconds) of the records the provider writes for the zone: the SOA record, the NS records at the zone apex and the A/AAAA (glue) records of the nameservers with an `address`. Changes are applied in place. It is read back from the SOA record (from the NS records with `soa.create_record = false`). Not to be confused with `soa.ttl`, the negative caching TTL. Defaults to `3600`.
 
 ### Read-Only
 
@@ -91,7 +92,7 @@ Optional:
 - `expire` (Number) If a secondary server does not get a response from the primary server for this amount of time, it should stop responding to queries for the zone.
 - `refresh` (Number) The length of time (in seconds) secondary servers should wait before asking primary servers for the SOA record to see if it has been updated.
 - `retry` (Number) The length of time a server should wait for asking an unresponsive primary nameserver for an update again.
-- `ttl` (Number) TTL of the zone data
+- `ttl` (Number) The MINIMUM field of the SOA record: the TTL (in seconds) resolvers cache negative answers (NXDOMAIN, NODATA) of the zone for (RFC 2308). It is not the TTL of the records; see the zone's `ttl` for that.
 
 ## Import
 

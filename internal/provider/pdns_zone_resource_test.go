@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
@@ -467,10 +469,10 @@ func TestZoneResourceImportExisting(t *testing.T) {
 	fake := newFakePDNS(t)
 	fake.mutate(func(f *fakePDNS) {
 		f.zones["example.test"] = &fakeZone{name: "example.test.", kind: "Native", serial: 2024010101, metadata: map[string][]string{}, rrsets: []pdns_client.Rrset{
-			{Name: "example.test.", Type: "SOA", Records: []pdns_client.Record{{Content: "ns1.example.test. hostmaster.example.test. 2024010101 3600 600 86400 300"}}},
-			{Name: "example.test.", Type: "NS", Records: []pdns_client.Record{{Content: "ns1.example.test."}, {Content: "ns.other.org."}}},
-			{Name: "ns1.example.test.", Type: "A", Records: []pdns_client.Record{{Content: "10.0.0.1"}}},
-			{Name: "www.example.test.", Type: "A", Records: []pdns_client.Record{{Content: "10.0.0.80"}}},
+			{Name: "example.test.", Type: "SOA", TTL: 3600, Records: []pdns_client.Record{{Content: "ns1.example.test. hostmaster.example.test. 2024010101 3600 600 86400 300"}}},
+			{Name: "example.test.", Type: "NS", TTL: 3600, Records: []pdns_client.Record{{Content: "ns1.example.test."}, {Content: "ns.other.org."}}},
+			{Name: "ns1.example.test.", Type: "A", TTL: 3600, Records: []pdns_client.Record{{Content: "10.0.0.1"}}},
+			{Name: "www.example.test.", Type: "A", TTL: 60, Records: []pdns_client.Record{{Content: "10.0.0.80"}}},
 		}}
 	})
 	config := zoneConfig(fake, `
@@ -499,7 +501,7 @@ func TestZoneResourceImportExisting(t *testing.T) {
 					want := map[string]string{
 						"soa.rname": "hostmaster", "soa.refresh": "3600", "soa.ttl": "300", "soa.create_record": "true",
 						"nameservers.#": "2", "nameservers.0.hostname": "ns1", "nameservers.0.address": "10.0.0.1",
-						"nameservers.1.hostname": "ns.other.org.", "serial": "2024010101", "lock_dnsupdate": "false",
+						"nameservers.1.hostname": "ns.other.org.", "serial": "2024010101", "lock_dnsupdate": "false", "ttl": "3600",
 					}
 					for k, v := range want {
 						if got := states[0].Attributes[k]; got != v {
@@ -1015,4 +1017,161 @@ func TestZoneResourceRemoveNameserverWithDeletedGlue(t *testing.T) {
 			},
 		},
 	})
+}
+
+// checkZoneTTLs asserts the TTL of the SOA, NS and A/AAAA rrsets of a zone on
+// the fake server.
+func checkZoneTTLs(fake *fakePDNS, zoneName string, ttl int64) resource.TestCheckFunc {
+	return func(*terraform.State) error {
+		zone, ok := fake.zone(zoneName)
+		if !ok {
+			return fmt.Errorf("zone %s does not exist", zoneName)
+		}
+		for _, rr := range zone.rrsets {
+			if slices.Contains([]string{"SOA", "NS", "A", "AAAA"}, rr.Type) && rr.TTL != ttl {
+				return fmt.Errorf("TTL of %s %s = %d, want %d", rr.Type, rr.Name, rr.TTL, ttl)
+			}
+		}
+		return nil
+	}
+}
+
+func TestZoneResourceTTL(t *testing.T) {
+	t.Parallel()
+	fake := newFakePDNS(t)
+	config := func(ttl, nameservers string) string {
+		return zoneConfig(fake, ttl+`
+  nameservers = [`+nameservers+`]
+  soa         = { rname = "hostmaster" }`)
+	}
+	two := `{ hostname = "ns1", address = "10.0.0.1" }, { hostname = "ns2", address = "2001:db8::2" }`
+	update := resource.ConfigPlanChecks{
+		PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction("pdns_zone.z", plancheck.ResourceActionUpdate)},
+	}
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:      config("ttl = 0", two),
+				PlanOnly:    true,
+				ExpectError: regexp.MustCompile(`must be at least 1`),
+			},
+			{
+				// The SOA, NS and glue rrsets get the default TTL, not 0.
+				Config: config("", two),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("pdns_zone.z", "ttl", "3600"),
+					checkZoneTTLs(fake, "example.test.", 3600),
+				),
+			},
+			{
+				// A nameserver change keeps the TTL of the replaced rrsets.
+				Config: config("", `{ hostname = "ns1", address = "10.0.0.1" }, { hostname = "ns3", address = "10.0.0.3" }`),
+				Check:  checkZoneTTLs(fake, "example.test.", 3600),
+			},
+			{
+				// Changing the TTL rewrites all of them in place.
+				Config:           config("ttl = 300", `{ hostname = "ns1", address = "10.0.0.1" }, { hostname = "ns3", address = "10.0.0.3" }`),
+				ConfigPlanChecks: update,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("pdns_zone.z", "ttl", "300"),
+					checkZoneTTLs(fake, "example.test.", 300),
+				),
+			},
+			{
+				// The SOA TTL changed out of band: the drift is reported and
+				// repaired.
+				PreConfig: func() {
+					fake.mutate(func(f *fakePDNS) {
+						z := f.zones["example.test"]
+						for i := range z.rrsets {
+							if z.rrsets[i].Type == "SOA" {
+								z.rrsets[i].TTL = 0
+							}
+						}
+					})
+				},
+				Config:           config("ttl = 300", `{ hostname = "ns1", address = "10.0.0.1" }, { hostname = "ns3", address = "10.0.0.3" }`),
+				ConfigPlanChecks: update,
+				Check:            checkZoneTTLs(fake, "example.test.", 300),
+			},
+		},
+	})
+}
+
+func TestZoneResourceTTLWithoutSOARecord(t *testing.T) {
+	t.Parallel()
+	fake := newFakePDNS(t)
+	config := func(ttl string) string {
+		return zoneConfig(fake, ttl+`
+  nameservers = [{ hostname = "ns1", address = "10.0.0.1" }]
+  soa = {
+    rname         = "hostmaster"
+    create_record = false
+  }`)
+	}
+	glueAndNS := func(ttl int64) resource.TestCheckFunc {
+		return func(*terraform.State) error {
+			zone, _ := fake.zone("example.test.")
+			for _, rr := range zone.rrsets {
+				if rr.Type != "SOA" && rr.TTL != ttl {
+					return fmt.Errorf("TTL of %s %s = %d, want %d", rr.Type, rr.Name, rr.TTL, ttl)
+				}
+			}
+			return nil
+		}
+	}
+
+	// The SOA record is PowerDNS's (TTL 3600); the ttl is read from the NS
+	// rrset, so a ttl other than that of the SOA record shows no diff.
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: config("ttl = 120"), Check: glueAndNS(120)},
+			{
+				Config: config("ttl = 120"),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+			},
+			{Config: config("ttl = 60"), Check: glueAndNS(60)},
+		},
+	})
+}
+
+func TestReadZoneTTL(t *testing.T) {
+	t.Parallel()
+	soa := func(createRecord bool) types.Object {
+		return types.ObjectValueMust(SOAModel{}.AttributeTypes(), map[string]attr.Value{
+			"rname": types.StringValue("hostmaster"), "refresh": types.Int64Value(1), "retry": types.Int64Value(1),
+			"expire": types.Int64Value(1), "ttl": types.Int64Value(1), "create_record": types.BoolValue(createRecord),
+		})
+	}
+	// Rrsets with differing TTLs, as in an imported zone.
+	zone := pdns_client.PDNSZone{Name: "example.com.", Rrsets: []pdns_client.Rrset{
+		{Type: "A", Name: "www.example.com.", TTL: 60},
+		{Type: "NS", Name: "example.com.", TTL: 86400},
+		{Type: "SOA", Name: "EXAMPLE.com", TTL: 300},
+		{Type: "SOA", Name: "sub.example.com.", TTL: 30},
+	}}
+	tests := map[string]struct {
+		zone    pdns_client.PDNSZone
+		soa     types.Object
+		current types.Int64
+		want    int64
+	}{
+		"from SOA":              {zone, soa(true), types.Int64Value(3600), 300},
+		"import":                {zone, types.ObjectNull(SOAModel{}.AttributeTypes()), types.Int64Null(), 300},
+		"without SOA record":    {zone, soa(false), types.Int64Value(3600), 86400},
+		"no rrsets, keep":       {pdns_client.PDNSZone{Name: "example.com."}, soa(true), types.Int64Value(42), 42},
+		"no rrsets, null":       {pdns_client.PDNSZone{Name: "example.com."}, soa(true), types.Int64Null(), defaultZoneTTL},
+		"no rrsets, unknown":    {pdns_client.PDNSZone{Name: "example.com."}, soa(true), types.Int64Unknown(), defaultZoneTTL},
+		"written with TTL zero": {pdns_client.PDNSZone{Name: "example.com.", Rrsets: []pdns_client.Rrset{{Type: "SOA", Name: "example.com."}}}, soa(true), types.Int64Value(3600), 0},
+	}
+	for name, tt := range tests {
+		if got := readZoneTTL(tt.zone, tt.soa, tt.current); got.ValueInt64() != tt.want || got.IsNull() || got.IsUnknown() {
+			t.Errorf("%s: readZoneTTL = %v, want %d", name, got, tt.want)
+		}
+	}
 }

@@ -198,6 +198,12 @@ func (f *fakePDNS) createZone(w http.ResponseWriter, r *http.Request) bool {
 	if rejectOutOfZone(w, in.Name, in.Rrsets) {
 		return false
 	}
+	if len(in.Nameservers) > 0 && slices.ContainsFunc(in.Rrsets, func(rr pdns_client.Rrset) bool {
+		return rr.Type == "NS" && fakeKey(rr.Name) == fakeKey(in.Name)
+	}) {
+		writeError(w, http.StatusUnprocessableEntity, "Nameservers list MUST NOT be mixed with zone-level NS in rrsets")
+		return false
+	}
 
 	zone := &fakeZone{name: in.Name, kind: in.Kind, dnssec: in.Dnssec, metadata: map[string][]string{}}
 	zone.rrsets = append(zone.rrsets, in.Rrsets...)
