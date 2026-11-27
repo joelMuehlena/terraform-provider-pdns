@@ -302,6 +302,11 @@ func (r *ZoneTSIGKeyResource) Delete(ctx context.Context, req resource.DeleteReq
 	handleClientError(&resp.Diagnostics, err)
 }
 
+// ImportState imports an attachment by an id of the form <zone>:<tsig_key_id>.
+// Like the import of pdns_record, zone gets a trailing dot if it lacks one;
+// so does the key id, which PowerDNS always returns fully qualified (the id
+// of pdns_tsig_key). Otherwise the plan after the import would replace the
+// attachment.
 func (r *ZoneTSIGKeyResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	// ":" separates the parts: "/" is valid in RFC 2317 classless reverse
 	// zones (e.g. 0/26.2.0.192.in-addr.arpa.).
@@ -314,7 +319,14 @@ func (r *ZoneTSIGKeyResource) ImportState(ctx context.Context, req resource.Impo
 		return
 	}
 
-	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), req.ID)...)
+	if !strings.HasSuffix(zone, ".") {
+		zone += "."
+	}
+	if !strings.HasSuffix(keyID, ".") {
+		keyID += "."
+	}
+
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("id"), zone+":"+keyID)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("zone"), zone)...)
 	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("tsig_key_id"), keyID)...)
 }
