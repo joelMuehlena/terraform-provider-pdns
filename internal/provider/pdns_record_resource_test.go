@@ -519,6 +519,7 @@ func TestReconcileRecords(t *testing.T) {
 		"canonical aaaa":  {"AAAA", []string{"2345:0425:2CA1:0000:0000:0567:5673:23b5"}, []string{"2345:425:2ca1::567:5673:23b5"}, []string{"2345:0425:2CA1:0000:0000:0567:5673:23b5"}},
 		"mx whitespace":   {"MX", []string{"10   mx."}, []string{"10 mx."}, []string{"10   mx."}},
 		"txt whitespace":  {"TXT", []string{`"a  b"`}, []string{`"a b"`}, []string{`"a b"`}},
+		"txt strings":     {"TXT", []string{`"a  b"   "c"`}, []string{`"a  b" "c"`}, []string{`"a  b"   "c"`}},
 		"import":          {"A", nil, []string{"10.0.0.1"}, []string{"10.0.0.1"}},
 		"changed":         {"A", []string{"10.0.0.9", "10.0.0.1"}, []string{"10.0.0.1", "10.0.0.2"}, []string{"10.0.0.1", "10.0.0.2"}},
 		"changed aaaa":    {"AAAA", []string{"::0001", "::3"}, []string{"::1", "::2"}, []string{"::0001", "::2"}},
@@ -535,6 +536,76 @@ func TestReconcileRecords(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCanonicalCharacterStrings(t *testing.T) {
+	t.Parallel()
+
+	for in, want := range map[string]string{
+		`"a"`:                 `"a"`,
+		`"a"   "b"`:           `"a" "b"`,
+		"\t \"a\"\t\n\"b\"  ": `"a" "b"`,
+		`"a  b"   "c"`:        `"a  b" "c"`,
+		`"a\"  b"   "c"`:      `"a\"  b" "c"`,
+		`"a\\"   "b"`:         `"a\\" "b"`,
+		`"a\\\"  "   "b"`:     `"a\\\"  " "b"`,
+		`"v=spf1  -all"`:      `"v=spf1  -all"`,
+		`"unterminated  x`:    `"unterminated  x`,
+		``:                    ``,
+	} {
+		if got := canonicalCharacterStrings(in); got != want {
+			t.Errorf("canonicalCharacterStrings(%q) = %q, want %q", in, got, want)
+		}
+	}
+	for _, typ := range []string{"TXT", "spf"} {
+		if got := canonicalRecordContent(typ, `"a"  "b  c"`); got != `"a" "b  c"` {
+			t.Errorf("canonicalRecordContent(%s) = %q", typ, got)
+		}
+	}
+}
+
+// TestRecordResourceTXTWhitespace checks that whitespace between the quoted
+// strings of a TXT record, which PowerDNS collapses, does not diff forever.
+func TestRecordResourceTXTWhitespace(t *testing.T) {
+	t.Parallel()
+	fake := newFakePDNS(t)
+	fake.addZone("example.test.")
+
+	config := recordConfig(fake, `
+  type    = "TXT"
+  records = ["\"a  b\"   \"c\"", "\"v=spf1\"\t\"-all\""]`)
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				// The step fails if the plan after apply is not empty.
+				Config: config,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					checkFakeRRset(fake, "www.example.test.", "TXT", 1800, []string{`"a  b" "c"`, `"v=spf1" "-all"`}, nil),
+					resource.TestCheckResourceAttr("pdns_record.r", "records.0", `"a  b"   "c"`),
+				),
+			},
+			{
+				// Whitespace inside a string is significant.
+				PreConfig: func() {
+					fake.mutate(func(f *fakePDNS) {
+						z := f.zones["example.test"]
+						for i := range z.rrsets {
+							if z.rrsets[i].Type == "TXT" {
+								z.rrsets[i].Records = []pdns_client.Record{{Content: `"a b" "c"`}, {Content: `"v=spf1" "-all"`}}
+							}
+						}
+					})
+				},
+				Config: config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction("pdns_record.r", plancheck.ResourceActionUpdate)},
+				},
+				Check: checkFakeRRset(fake, "www.example.test.", "TXT", 1800, []string{`"a  b" "c"`, `"v=spf1" "-all"`}, nil),
+			},
+		},
+	})
 }
 
 func TestRecordResourceParallelChangesAreSerializedPerZone(t *testing.T) {

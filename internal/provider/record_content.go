@@ -14,8 +14,11 @@ import (
 // PowerDNS stores AAAA addresses in their RFC 5952 form (lowercase, leading
 // zeros dropped, the longest zero run compressed) and collapses runs of
 // whitespace between the fields of a record (e.g. MX "10   mail." becomes
-// "10 mail."). Whitespace inside TXT and SPF content is significant, so it is
-// left alone. Everything else is compared verbatim.
+// "10 mail."). TXT and SPF content is a list of quoted character strings:
+// whitespace inside the quotes is significant and kept, but PowerDNS joins
+// the strings with a single space ("a"   "b" becomes "a" "b"; 4.9 and 5.0
+// reject such content instead), see canonicalCharacterStrings. Everything
+// else is compared verbatim.
 func canonicalRecordContent(typ, content string) string {
 	switch strings.ToUpper(typ) {
 	case "A", "AAAA":
@@ -24,10 +27,42 @@ func canonicalRecordContent(typ, content string) string {
 		}
 		return content
 	case "TXT", "SPF":
-		return content
+		return canonicalCharacterStrings(content)
 	default:
 		return strings.Join(strings.Fields(content), " ")
 	}
+}
+
+// canonicalCharacterStrings collapses each run of whitespace outside double
+// quotes to a single space and drops leading and trailing whitespace, like
+// PowerDNS does for the character strings of TXT and SPF records. Text inside
+// quotes is kept as is; a backslash escapes the next character, so \" does
+// not end a quoted string.
+func canonicalCharacterStrings(content string) string {
+	var b strings.Builder
+	b.Grow(len(content))
+	inQuotes, escaped, space := false, false, false
+	for i := 0; i < len(content); i++ {
+		c := content[i]
+		if !inQuotes && !escaped && (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+			space = b.Len() > 0
+			continue
+		}
+		if space {
+			b.WriteByte(' ')
+			space = false
+		}
+		b.WriteByte(c)
+		switch {
+		case escaped:
+			escaped = false
+		case c == '\\':
+			escaped = true
+		case c == '"':
+			inQuotes = !inQuotes
+		}
+	}
+	return b.String()
 }
 
 // reconcileRecords returns the records to store in state after a read. prior

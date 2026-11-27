@@ -15,8 +15,9 @@ import (
 //   - the type is uppercased ("a" is stored as "A"),
 //   - the content of A and AAAA records is canonicalized
 //     ("2345:0425:2CA1:0000:0000:0567:5673:23b5" becomes "2345:425:2ca1::567:5673:23b5"),
-//   - runs of whitespace between the fields of other non-TXT records collapse
-//     ("10   mail." becomes "10 mail."),
+//   - runs of whitespace between the fields of other records collapse
+//     ("10   mail." becomes "10 mail."), for TXT and SPF only outside the
+//     quoted strings ("a"   "b" becomes "a" "b"),
 //   - the records are sorted by content, whatever order they were sent in.
 func fakeStoreRrset(rr pdns_client.Rrset) pdns_client.Rrset {
 	rr.Name = strings.ToLower(rr.Name)
@@ -29,6 +30,7 @@ func fakeStoreRrset(rr pdns_client.Rrset) pdns_client.Rrset {
 				records[i].Content = addr.String()
 			}
 		case "TXT", "SPF":
+			records[i].Content = canonicalCharacterStrings(records[i].Content)
 		default:
 			records[i].Content = strings.Join(strings.Fields(records[i].Content), " ")
 		}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -284,6 +285,59 @@ func TestAccRecordResourceTypeChange(t *testing.T) {
 					env.checkRRset(zone, www, "AAAA", 1800, []string{"::1"}, []string{}),
 					env.checkRRset(zone, www, "A", 0, nil, nil),
 				),
+			},
+		},
+	})
+}
+
+// TestAccRecordResourceTXTWhitespace checks that whitespace between the
+// quoted strings of a TXT record, which PowerDNS collapses to one space, does
+// not diff forever, while whitespace inside a string is kept.
+func TestAccRecordResourceTXTWhitespace(t *testing.T) {
+	env := testAccPreCheck(t)
+	zone := env.createZone(t, "txt")
+	www := "www." + zone
+
+	// 4.9 and 5.0 reject such content with 422 "Not in expected format", so
+	// it cannot be configured there, and there is nothing to normalize.
+	err := env.client.UpdateZoneRecords(context.Background(), zone, []pdns_client.Rrset{{
+		Name: "probe." + zone, Type: "TXT", Changetype: "REPLACE", TTL: 60,
+		Records: []pdns_client.Record{{Content: `"a"   "b"`}},
+	}})
+	if err != nil && strings.Contains(err.Error(), "Not in expected format") {
+		t.Skipf("the server rejects whitespace between TXT strings (before 5.1): %v", err)
+	} else if err != nil {
+		t.Fatal(err)
+	}
+
+	config := accRecordConfig(env, zone, `
+  type    = "TXT"
+  records = ["\"a  b\"   \"c\"", "\"v=spf1\"\t\"-all\""]`)
+
+	resource.ParallelTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				// The step fails if the refresh plan after apply is not empty.
+				Config: config,
+				Check:  env.checkRRset(zone, www, "TXT", 1800, []string{`"a  b" "c"`, `"v=spf1" "-all"`}, []string{}),
+			},
+			{
+				// Whitespace inside a string is significant.
+				PreConfig: func() {
+					err := env.client.UpdateZoneRecords(context.Background(), zone, []pdns_client.Rrset{{
+						Name: www, Type: "TXT", Changetype: "REPLACE", TTL: 1800,
+						Records: []pdns_client.Record{{Content: `"a b" "c"`}, {Content: `"v=spf1" "-all"`}},
+					}})
+					if err != nil {
+						t.Fatal(err)
+					}
+				},
+				Config: config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction("pdns_record.r", plancheck.ResourceActionUpdate)},
+				},
+				Check: env.checkRRset(zone, www, "TXT", 1800, []string{`"a  b" "c"`, `"v=spf1" "-all"`}, []string{}),
 			},
 		},
 	})
