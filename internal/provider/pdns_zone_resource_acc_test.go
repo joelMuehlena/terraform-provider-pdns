@@ -488,8 +488,9 @@ func TestAccZoneResourceImport(t *testing.T) {
   kind           = "Master"
   lock_dnsupdate = true
   nameservers = [
-    { hostname = "ns1", address = "10.0.0.1" },
-    { hostname = "ns2", address = "2001:db8::2" },
+    # Glue imports as addresses, also a single address.
+    { hostname = "ns1", addresses = ["10.0.0.1"] },
+    { hostname = "ns2", addresses = ["2001:db8::2"] },
     { hostname = "ns3.other.org." },
   ]
   soa = {
@@ -499,6 +500,13 @@ func TestAccZoneResourceImport(t *testing.T) {
     expire  = 86400
     ttl     = 300
   }`,
+		"import-dualstack": `
+  nameservers = [
+    { hostname = "ns1", addresses = ["10.0.0.1", "2001:db8::1"] },
+    { hostname = "ns2", addresses = ["10.0.0.20", "10.0.0.3", "2001:db8::2", "2001:db8::10"] },
+    { hostname = "ns3.other.org." },
+  ]
+  soa = { rname = "hostmaster" }`,
 		// The default SOA record of PowerDNS imports as create_record = false.
 		"import-nosoa": `
   nameservers = [{ hostname = "ns1.other.org." }]
@@ -535,6 +543,7 @@ func TestAccZoneResourceImportExisting(t *testing.T) {
 		Rrsets: []pdns_client.Rrset{
 			{Name: name, Type: "SOA", TTL: 3600, Records: []pdns_client.Record{{Content: "ns1." + name + " hostmaster." + name + " 2024010101 3600 600 86400 300"}}},
 			{Name: "ns1." + name, Type: "A", TTL: 3600, Records: []pdns_client.Record{{Content: "10.0.0.1"}}},
+			{Name: "ns1." + name, Type: "AAAA", TTL: 3600, Records: []pdns_client.Record{{Content: "2001:db8::1"}}},
 		},
 	})
 	if err != nil {
@@ -542,7 +551,7 @@ func TestAccZoneResourceImportExisting(t *testing.T) {
 	}
 	config := accZoneConfig(env, name, `
   nameservers = [
-    { hostname = "ns1", address = "10.0.0.1" },
+    { hostname = "ns1", addresses = ["2001:db8::1", "10.0.0.1"] },
     { hostname = "ns.other.org." },
   ]
   soa = {
@@ -582,7 +591,7 @@ func TestAccZoneResourceUppercaseName(t *testing.T) {
 	env := testAccPreCheck(t)
 	name := env.zoneName(t, "Upper.Case")
 	config := accZoneConfig(env, name, `
-  nameservers = [{ hostname = "NS1", address = "10.0.0.1" }]
+  nameservers = [{ hostname = "NS1", addresses = ["10.0.0.1"] }]
   soa         = { rname = "hostmaster" }`)
 	lower := strings.ToLower(name)
 
@@ -706,6 +715,83 @@ func TestAccZoneResourceDrift(t *testing.T) {
 			driftStep(func() {
 				env.replaceRRset(t, name, name, "SOA", "ns1."+name+" admin."+name+" 1 86400 7200 4000000 11200")
 			}),
+		},
+	})
+}
+
+// TestAccZoneResourceDualStack creates, changes and imports nameservers with
+// dual-stack glue (addresses) and checks the A and AAAA rrsets on the server,
+// including their TTL and out of band changes to either of them.
+func TestAccZoneResourceDualStack(t *testing.T) {
+	env := testAccPreCheck(t)
+	name := env.zoneName(t, "dualstack")
+	config := func(ttl, ns1, ns2 string) string {
+		return accZoneConfig(env, name, ttl+`
+  nameservers = [
+    { hostname = "ns1", `+ns1+` },
+    { hostname = "ns2", `+ns2+` },
+    { hostname = "ns3.other.org." },
+  ]
+  soa = { rname = "hostmaster" }`)
+	}
+	soa := "SOA " + name + " ns1." + name + " hostmaster." + name + " SERIAL 86400 7200 4000000 11200"
+	ns := "NS " + name + " ns1." + name + ",ns2." + name + ",ns3.other.org."
+	// In the spelling PowerDNS returns, so the import matches the state.
+	dualStack := `addresses = ["10.0.0.1", "2001:db8::1"]`
+	update := resource.ConfigPlanChecks{
+		PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction("pdns_zone.z", plancheck.ResourceActionUpdate)},
+	}
+	full := config("", dualStack, `address = "10.0.0.2"`)
+	fullRRsets := []string{soa, ns, "A ns1." + name + " 10.0.0.1", "AAAA ns1." + name + " 2001:db8::1", "A ns2." + name + " 10.0.0.2"}
+	driftStep := func(mutate func()) resource.TestStep {
+		return resource.TestStep{PreConfig: mutate, Config: full, ConfigPlanChecks: update, Check: env.checkRRsets(name, fullRRsets...)}
+	}
+
+	resource.ParallelTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		CheckDestroy:             env.checkZoneGone(name),
+		Steps: []resource.TestStep{
+			{Config: full, Check: env.checkRRsets(name, fullRRsets...)},
+			{
+				// Several addresses per family.
+				Config:           config("", `addresses = ["10.0.0.1", "10.0.0.11", "2001:db8::1", "2001:db8::2"]`, `address = "10.0.0.2"`),
+				ConfigPlanChecks: update,
+				Check: env.checkRRsets(name, soa, ns, "A ns1."+name+" 10.0.0.1,10.0.0.11", "AAAA ns1."+name+" 2001:db8::1,2001:db8::2",
+					"A ns2."+name+" 10.0.0.2"),
+			},
+			{
+				// Removing all IPv6 addresses deletes the AAAA rrset.
+				Config:           config("", `addresses = ["10.0.0.1"]`, `address = "10.0.0.2"`),
+				ConfigPlanChecks: update,
+				Check:            env.checkRRsets(name, soa, ns, "A ns1."+name+" 10.0.0.1", "A ns2."+name+" 10.0.0.2"),
+			},
+			{
+				// From address to addresses with the same and a new address.
+				Config:           config("", dualStack, `addresses = ["10.0.0.2", "2001:db8::2"]`),
+				ConfigPlanChecks: update,
+				Check: env.checkRRsets(name, soa, ns, "A ns1."+name+" 10.0.0.1", "AAAA ns1."+name+" 2001:db8::1",
+					"A ns2."+name+" 10.0.0.2", "AAAA ns2."+name+" 2001:db8::2"),
+			},
+			{
+				// The TTL applies to both rrsets.
+				Config:           config("ttl = 300", dualStack, `addresses = ["10.0.0.2", "2001:db8::2"]`),
+				ConfigPlanChecks: update,
+				Check: env.checkRRsetsTTL(name, 300, soa, ns, "A ns1."+name+" 10.0.0.1", "AAAA ns1."+name+" 2001:db8::1",
+					"A ns2."+name+" 10.0.0.2", "AAAA ns2."+name+" 2001:db8::2"),
+			},
+			accImportStep(config("ttl = 300", dualStack, `addresses = ["10.0.0.2", "2001:db8::2"]`), name),
+			{
+				// Back to the deprecated address: the AAAA rrset goes, the A
+				// one stays.
+				Config:           full,
+				ConfigPlanChecks: update,
+				Check:            env.checkRRsets(name, fullRRsets...),
+			},
+			// Out of band changes to either rrset are drift and restored.
+			driftStep(func() { env.replaceRRset(t, name, "ns1."+name, "AAAA", "2001:db8::9") }),
+			driftStep(func() { env.replaceRRset(t, name, "ns1."+name, "AAAA") }),
+			driftStep(func() { env.replaceRRset(t, name, "ns1."+name, "A", "10.0.0.1", "10.0.0.8") }),
+			driftStep(func() { env.replaceRRset(t, name, "ns1."+name, "A") }),
 		},
 	})
 }
