@@ -17,7 +17,9 @@
 #                  see compose.yml, e.g. PDNS_ACC_SERVER_ARGS=--dnsupdate-require-tsig=yes
 #                  (PowerDNS 5.0+) to run the tests against the recommended setting
 #
-# A terraform (or tofu, via TF_ACC_TERRAFORM_PATH) binary must be on PATH.
+# A terraform binary must be on PATH. For OpenTofu, set
+# TF_ACC_TERRAFORM_PATH to the tofu binary and
+# TF_ACC_PROVIDER_HOST=registry.opentofu.org.
 #
 # The images are pinned to exact versions in images/*.Dockerfile, which
 # Dependabot keeps up to date (they are never built). To bump one by hand,

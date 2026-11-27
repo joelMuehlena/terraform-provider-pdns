@@ -120,7 +120,7 @@ jobs:
           go test -race -count=1 -cover ./...
 
   acceptance:
-    name: acceptance (pdns ${{ matrix.pdns }}, ${{ matrix.backend }}${{ matrix.server_args && format(', {0}', matrix.server_args) || '' }})
+    name: acceptance (pdns ${{ matrix.pdns }}, ${{ matrix.backend }}${{ matrix.server_args && format(', {0}', matrix.server_args) || '' }}${{ matrix.cli == 'tofu' && ', tofu' || '' }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -130,24 +130,41 @@ jobs:
         backend: [gsqlite3, gpgsql]
         # Extra pdns_server arguments (PDNS_ACC_SERVER_ARGS).
         server_args: [""]
+        # CLI that runs the tests: terraform everywhere, tofu on the latest
+        # PowerDNS with each backend (see the includes).
+        cli: [terraform]
         include:
           # The recommended dnsupdate-require-tsig (5.0+, refused by 4.9). It
           # does not depend on the backend.
-          - { pdns: "5.0", backend: gsqlite3, server_args: "--dnsupdate-require-tsig=yes" }
-          - { pdns: "5.1", backend: gsqlite3, server_args: "--dnsupdate-require-tsig=yes" }
+          - { pdns: "5.0", backend: gsqlite3, server_args: "--dnsupdate-require-tsig=yes", cli: terraform }
+          - { pdns: "5.1", backend: gsqlite3, server_args: "--dnsupdate-require-tsig=yes", cli: terraform }
+          - { pdns: "5.1", backend: gsqlite3, server_args: "", cli: tofu }
+          - { pdns: "5.1", backend: gpgsql, server_args: "", cli: tofu }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: "go.mod"
           cache: true
-      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+      - if: matrix.cli == 'terraform'
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: "1.17.*"
           terraform_wrapper: false
+      - if: matrix.cli == 'tofu'
+        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: "1.13.*"
+          tofu_wrapper: false
       - name: Acceptance tests
         env:
+          CLI: ${{ matrix.cli }}
           PDNS_VERSION: ${{ matrix.pdns }}
           PDNS_BACKEND: ${{ matrix.backend }}
           PDNS_ACC_SERVER_ARGS: ${{ matrix.server_args }}
-        run: test/acc/run.sh -v
+        run: |
+          if [ "$CLI" = tofu ]; then
+            export TF_ACC_TERRAFORM_PATH="$(command -v tofu)"
+            export TF_ACC_PROVIDER_HOST=registry.opentofu.org
+          fi
+          test/acc/run.sh -v

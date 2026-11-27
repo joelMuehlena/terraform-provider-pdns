@@ -128,6 +128,8 @@ mise run testacc                                   # PowerDNS 5.1, gsqlite3
 PDNS_VERSION=4.9 PDNS_BACKEND=gpgsql mise run testacc -- -v
 COMPOSE="podman compose" mise run testacc          # podman instead of docker
 PDNS_ACC_SERVER_ARGS=--dnsupdate-require-tsig=yes mise run testacc  # extra server flags
+TF_ACC_TERRAFORM_PATH="$(mise which tofu)" TF_ACC_PROVIDER_HOST=registry.opentofu.org \
+  mise run testacc                                 # OpenTofu instead of Terraform
 ```
 
 The PowerDNS and PostgreSQL images are pinned to exact versions in
@@ -141,5 +143,6 @@ built). Dependabot proposes updates for them; to bump one by hand, edit its
 settings, e.g. the ports and the compose project name.
 
 CI runs PowerDNS 4.9, 5.0 and 5.1, each with the `gsqlite3` and `gpgsql`
-backends, plus 5.0 and 5.1 with `dnsupdate-require-tsig=yes`. Another backend
+backends, plus 5.0 and 5.1 with `dnsupdate-require-tsig=yes`, all with
+Terraform, and 5.1 with both backends with OpenTofu. Another backend
 is one `test/acc/compose.<backend>.yml` (plus its config) and one matrix entry.
