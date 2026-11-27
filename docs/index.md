@@ -30,3 +30,4 @@ provider "pdns" {
 
 - `server_id` (String) Server id. If unset defaults to `localhost`. See [PowerDNS API docs](https://doc.powerdns.com/authoritative/http-api/server.html) for mor info
 - `skip_tls_verify` (Boolean) Whether the verification of TLS certificates with the remote should be skipped.
+- `timeout` (String) Timeout of each request to the PowerDNS API as a Go duration, e.g. `30s` or `2m`. Covers connecting, sending the request and reading the whole response. `0s` disables the timeout. Defaults to `30s`.
