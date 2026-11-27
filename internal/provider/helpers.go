@@ -1,8 +1,10 @@
 package provider
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -78,4 +80,45 @@ func asciiLower(c byte) byte {
 		return c + 'a' - 'A'
 	}
 	return c
+}
+
+// dnsNameValidator validates a name that the provider qualifies with fqdn:
+// either relative to the zone ("ns1", "a.b") or fully qualified with a
+// trailing dot ("ns1.example.com."). It rejects what fqdn would turn into a
+// broken name: an empty name, "@" (the provider has no relative spelling for
+// the zone apex, use its fully qualified name), a leading dot, empty labels
+// and whitespace.
+type dnsNameValidator struct{}
+
+func (v dnsNameValidator) Description(context.Context) string {
+	return "must be a DNS name relative to the zone or fully qualified with a trailing dot; use the fully qualified name for the zone apex"
+}
+
+func (v dnsNameValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (v dnsNameValidator) ValidateString(_ context.Context, req validator.StringRequest, resp *validator.StringResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	name := req.ConfigValue.ValueString()
+
+	var problem string
+	switch {
+	case name == "":
+		problem = "the name is empty"
+	case name == "@":
+		problem = `"@" is not supported; use the fully qualified name of the zone apex, e.g. "example.com."`
+	case strings.HasPrefix(name, "."):
+		problem = "the name starts with a dot"
+	case strings.Contains(name, ".."):
+		problem = "the name contains an empty label (\"..\")"
+	case strings.ContainsAny(name, " \t\r\n"):
+		problem = "the name contains whitespace"
+	default:
+		return
+	}
+	resp.Diagnostics.AddAttributeError(req.Path, "Invalid DNS name",
+		fmt.Sprintf("%q is not a valid name: %s. Give it relative to the zone (\"ns1\") or fully qualified with a trailing dot (\"ns1.example.com.\").", name, problem))
 }

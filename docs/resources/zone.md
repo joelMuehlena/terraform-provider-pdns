@@ -71,7 +71,7 @@ On PowerDNS 5.0 and later, prefer the server setting `dnsupdate-require-tsig=yes
 
 Required:
 
-- `hostname` (String) The hostname of the nameservers. Will be suffixed with the zone name if not ending with an explicit '.'
+- `hostname` (String) The hostname of the nameservers. Will be suffixed with the zone name if not ending with an explicit '.'. Use the fully qualified name (e.g. "example.com.") for the zone apex; "@" and empty names are rejected.
 
 Optional:
 
@@ -83,7 +83,7 @@ Optional:
 
 Required:
 
-- `rname` (String) The RName of the SOA record. Represents the administrator's email address. It will be suffixed with the zone name unless ending with an explicit '.'
+- `rname` (String) The RName of the SOA record. Represents the administrator's email address. It will be suffixed with the zone name unless ending with an explicit '.'. "@" and empty names are rejected.
 
 Optional:
 
