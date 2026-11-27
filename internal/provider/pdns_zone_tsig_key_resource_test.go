@@ -102,7 +102,7 @@ func TestZoneTSIGKeyResource(t *testing.T) {
 				// Many keys per zone and many zones per key in one apply.
 				Config: zoneTSIGConfig(fake, true),
 				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("pdns_zone_tsig_key.a_z1", "id", "z1.test./tenant-a."),
+					resource.TestCheckResourceAttr("pdns_zone_tsig_key.a_z1", "id", "z1.test.:tenant-a."),
 					resource.TestCheckResourceAttr("pdns_zone_tsig_key.a_z1", "axfr", "true"),
 					resource.TestCheckResourceAttr("pdns_zone_tsig_key.a_z1", "secondary", "false"),
 					resource.TestCheckResourceAttr("pdns_zone_tsig_key.a_z2", "axfr", "false"),
@@ -121,7 +121,7 @@ func TestZoneTSIGKeyResource(t *testing.T) {
 			{
 				ResourceName:      "pdns_zone_tsig_key.b_z1",
 				ImportState:       true,
-				ImportStateId:     "z1.test./tenant-b.",
+				ImportStateId:     "z1.test.:tenant-b.",
 				ImportStateVerify: true,
 			},
 		},
@@ -223,11 +223,48 @@ resource "pdns_zone_tsig_key" "x" {
 	}
 }
 
+func TestZoneTSIGKeyResourceImportClasslessReverseZone(t *testing.T) {
+	t.Parallel()
+	fake := newFakePDNS(t)
+	// RFC 2317: "/" is part of the zone name.
+	const zone = "0/26.2.0.192.in-addr.arpa."
+	fake.addZone(zone)
+	config := fake.providerConfig() + `
+resource "pdns_tsig_key" "a" {
+  name = "tenant-a"
+  key  = "` + secretA + `"
+}
+
+resource "pdns_zone_tsig_key" "a" {
+  zone        = "` + zone + `"
+  tsig_key_id = pdns_tsig_key.a.id
+  dnsupdate   = true
+}
+`
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+				Check:  resource.TestCheckResourceAttr("pdns_zone_tsig_key.a", "id", zone+":tenant-a."),
+			},
+			{
+				Config:            config,
+				ResourceName:      "pdns_zone_tsig_key.a",
+				ImportState:       true,
+				ImportStateId:     zone + ":tenant-a.",
+				ImportStateVerify: true,
+			},
+		},
+	})
+}
+
 func TestZoneTSIGKeyResourceInvalidImportID(t *testing.T) {
 	t.Parallel()
 	fake := newFakePDNS(t)
 
-	for _, id := range []string{"no-slash", "/tenant-a.", "z1.test./"} {
+	for _, id := range []string{"no-separator", ":tenant-a.", "z1.test.:"} {
 		t.Run(id, func(t *testing.T) {
 			t.Parallel()
 			resource.UnitTest(t, resource.TestCase{

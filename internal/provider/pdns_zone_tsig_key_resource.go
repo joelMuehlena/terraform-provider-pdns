@@ -101,7 +101,7 @@ func (r *ZoneTSIGKeyResource) Schema(ctx context.Context, req resource.SchemaReq
 			"serialize applies that touch the same zone.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
-				MarkdownDescription: "Identifier of the attachment in the form `<zone>/<tsig_key_id>`.",
+				MarkdownDescription: "Identifier of the attachment in the form `<zone>:<tsig_key_id>`.",
 				Computed:            true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
@@ -208,7 +208,7 @@ func (r *ZoneTSIGKeyResource) Create(ctx context.Context, req resource.CreateReq
 		return
 	}
 
-	plan.ID = types.StringValue(zone + "/" + keyID)
+	plan.ID = types.StringValue(zone + ":" + keyID)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -250,7 +250,7 @@ func (r *ZoneTSIGKeyResource) Read(ctx context.Context, req resource.ReadRequest
 		return
 	}
 
-	data.ID = types.StringValue(zone + "/" + keyID)
+	data.ID = types.StringValue(zone + ":" + keyID)
 	data.DNSUpdate = types.BoolValue(current.DNSUpdate)
 	data.AXFR = types.BoolValue(current.AXFR)
 	data.Secondary = types.BoolValue(current.Secondary)
@@ -303,11 +303,13 @@ func (r *ZoneTSIGKeyResource) Delete(ctx context.Context, req resource.DeleteReq
 }
 
 func (r *ZoneTSIGKeyResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	zone, keyID, ok := strings.Cut(req.ID, "/")
+	// ":" separates the parts: "/" is valid in RFC 2317 classless reverse
+	// zones (e.g. 0/26.2.0.192.in-addr.arpa.).
+	zone, keyID, ok := strings.Cut(req.ID, ":")
 	if !ok || zone == "" || keyID == "" {
 		resp.Diagnostics.AddError(
 			"Invalid import ID",
-			fmt.Sprintf("Expected an import ID in the form `<zone>/<tsig_key_id>` (e.g. `example.com./tenant-a.`), got %q.", req.ID),
+			fmt.Sprintf("Expected an import ID in the form `<zone>:<tsig_key_id>` (e.g. `example.com.:tenant-a.`), got %q.", req.ID),
 		)
 		return
 	}
