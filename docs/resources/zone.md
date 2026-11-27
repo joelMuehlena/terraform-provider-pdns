@@ -23,12 +23,17 @@ resource "pdns_zone" "example_com" {
 
   nameservers = [
     {
-      hostname = "ns1",
-      address  = "10.10.10.1"
+      # Dual-stack glue: an A and an AAAA record at ns1.example.com.
+      hostname  = "ns1",
+      addresses = ["10.10.10.1", "2001:db8::1"]
     },
     {
-      hostname = "ns2",
-      address  = "10.10.10.2"
+      hostname  = "ns2",
+      addresses = ["10.10.10.2"]
+    },
+    {
+      # Outside the zone, so without glue records.
+      hostname = "ns.example.net."
     }
   ]
 
@@ -50,7 +55,7 @@ resource "pdns_zone" "example_com" {
 ### Required
 
 - `name` (String) The Name of the zone to be created. Must end with a dot
-- `nameservers` (Attributes List) The nameservers of the Zone. Each nameserver can only be listed once (hostnames are compared fully qualified and case-insensitively), so it has at most one glue `address`; dual-stack glue (both an A and an AAAA record) is not supported. (see [below for nested schema](#nestedatt--nameservers))
+- `nameservers` (Attributes List) The nameservers of the Zone. Each nameserver can only be listed once (hostnames are compared fully qualified and case-insensitively). Nameservers inside the zone can have glue records, set with `addresses`: one or several addresses, e.g. an IPv4 and an IPv6 address (dual-stack glue). (see [below for nested schema](#nestedatt--nameservers))
 - `soa` (Attributes) The Start Of Authority (SOA) record parameters for the zone. (see [below for nested schema](#nestedatt--soa))
 
 ### Optional
@@ -61,7 +66,7 @@ resource "pdns_zone" "example_com" {
 
 On PowerDNS 5.0 and later, prefer the server setting `dnsupdate-require-tsig=yes`: it refuses every update that is not signed by a key listed for the zone, for all zones and from the moment they exist, so this lock is not needed. Use the lock on 4.9 (which does not have the setting) or where the server configuration cannot be changed. The setting applies to every zone of the server; for per-zone control, also on 5.0+, leave `dnsupdate-require-tsig` off and set `lock_dnsupdate = true` only on the zones that must refuse unsigned updates. The placeholder is not a real key: never create a TSIG key named `pdns-provider-dnsupdate-locked` outside the provider (with `pdnsutil` or the API), as it would be allowed to perform dynamic updates of every zone with `lock_dnsupdate = true`. Defaults to `false`.
 - `masters` (List of String) The primaries the zone is transferred from, as IP addresses with an optional port (`192.0.2.1`, `2001:db8::1`, `192.0.2.1:5300` or `[2001:db8::1]:5300`). Only valid for `kind = "Slave"` or `"Consumer"`; such zones are created with their primaries directly, also with `lock_dnsupdate = true` (the temporary `Slave` of a locked create is only used for the other kinds and has no primaries). Changes are applied in place.
-- `ttl` (Number) The TTL (in seconds) of the records the provider writes for the zone: the SOA record, the NS records at the zone apex and the A/AAAA (glue) records of the nameservers with an `address`. Changes are applied in place. It is read back from the SOA record (from the NS records with `soa.create_record = false`). Not to be confused with `soa.ttl`, the negative caching TTL. Defaults to `3600`.
+- `ttl` (Number) The TTL (in seconds) of the records the provider writes for the zone: the SOA record, the NS records at the zone apex and the A/AAAA (glue) records of the nameservers with an `address` or `addresses`. Changes are applied in place. It is read back from the SOA record (from the NS records with `soa.create_record = false`). Not to be confused with `soa.ttl`, the negative caching TTL. Defaults to `3600`.
 
 ### Read-Only
 
@@ -76,7 +81,8 @@ Required:
 
 Optional:
 
-- `address` (String) The IP Address of the nameserver. The provider manages it as the A (IPv4) or AAAA (IPv6) glue record at the hostname, holding exactly this address, so it can only be set for nameservers inside the zone. If that record is changed, extended or removed outside of Terraform, the next plan shows the difference and the apply restores it.
+- `address` (String, Deprecated) **Deprecated:** use `addresses` instead (`addresses = ["192.0.2.1"]`); `address` will be removed in a future major version. Switching from `address` to `addresses` with the same address keeps the glue record. The IP Address of the nameserver. The provider manages it as the A (IPv4) or AAAA (IPv6) glue record at the hostname, holding exactly this address, so it can only be set for nameservers inside the zone. If that record is changed, extended or removed outside of Terraform, the next plan shows the difference and the apply restores it. A record of the other family at the hostname is not managed.
+- `addresses` (Set of String) The IP addresses of the nameserver (glue), e.g. an IPv4 and an IPv6 address for dual-stack glue; conflicts with the deprecated `address`. The provider manages them as the A record (all IPv4 addresses) and the AAAA record (all IPv6 addresses) at the hostname, holding exactly these addresses: a record of a family without addresses is deleted. Like `address`, it can only be set for nameservers inside the zone, and records changed, extended or removed outside of Terraform show as difference in the next plan and are restored by the apply. Each address can only be listed once (also in another spelling of an IPv6 address). Switching between `address` and `addresses` with the same address keeps the glue record. On import, the glue records of a nameserver inside the zone are always imported as `addresses`, also a single one.
 
 
 <a id="nestedatt--soa"></a>
@@ -110,12 +116,16 @@ The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/c
 # - nameservers from the NS records: first the primary nameserver of the SOA
 #   record, then the others sorted by name (the order PowerDNS returns them in
 #   depends on the backend). Hostnames inside the zone are relative to it ("ns1"), others
-#   fully qualified. A hostname inside the zone gets its address from the A
-#   record at that name, or else the AAAA record.
+#   fully qualified. A hostname inside the zone gets addresses from the A and
+#   AAAA records at that name (IPv4 first, each sorted), also for a single
+#   record: glue is always imported as addresses, never as the deprecated
+#   address.
 #
 # Write names inside the zone relative to it, list the nameservers in the same
-# order and set the address of every nameserver that has one, so the first
-# plan after the import shows no changes. Otherwise that plan updates the zone
-# to the configured values.
+# order and set the addresses of every nameserver that has glue records, so
+# the first plan after the import shows no changes. Otherwise that plan updates
+# the zone to the configured values. A configuration that still sets address
+# shows such an update (from addresses to address); it changes no glue record,
+# but switch to addresses = ["<address>"] instead.
 terraform import pdns_zone.example_com example.com.
 ```

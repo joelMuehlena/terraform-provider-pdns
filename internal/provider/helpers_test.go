@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
@@ -530,8 +531,78 @@ func TestNameserverRecordChanges(t *testing.T) {
 			planned: []Nameserver{{Hostname: "ns1", Address: new("2001:db8::1")}},
 			current: []Nameserver{{Hostname: "ns1", Address: new("10.0.0.1")}},
 			want: []pdns_client.Rrset{
-				{Type: "AAAA", Changetype: "REPLACE", Name: "ns1.example.com.", TTL: 300, Records: []pdns_client.Record{{Content: "2001:db8::1"}}},
 				{Type: "A", Changetype: "DELETE", Name: "ns1.example.com."},
+				{Type: "AAAA", Changetype: "REPLACE", Name: "ns1.example.com.", TTL: 300, Records: []pdns_client.Record{{Content: "2001:db8::1"}}},
+			},
+		},
+		"dual-stack created": {
+			planned: []Nameserver{{Hostname: "ns1", Addresses: []string{"2001:db8::1", "10.0.0.2", "10.0.0.10"}}},
+			want: []pdns_client.Rrset{
+				{Type: "A", Changetype: "REPLACE", Name: "ns1.example.com.", TTL: 300, Records: []pdns_client.Record{{Content: "10.0.0.2"}, {Content: "10.0.0.10"}}},
+				{Type: "AAAA", Changetype: "REPLACE", Name: "ns1.example.com.", TTL: 300, Records: []pdns_client.Record{{Content: "2001:db8::1"}}},
+			},
+		},
+		"ipv6 added": {
+			// The A rrset is unchanged and left alone.
+			planned: []Nameserver{{Hostname: "ns1", Addresses: []string{"10.0.0.1", "2001:db8::1"}}},
+			current: []Nameserver{{Hostname: "ns1", Addresses: []string{"10.0.0.1"}}},
+			want:    []pdns_client.Rrset{{Type: "AAAA", Changetype: "REPLACE", Name: "ns1.example.com.", TTL: 300, Records: []pdns_client.Record{{Content: "2001:db8::1"}}}},
+		},
+		"ipv6 removed": {
+			planned: []Nameserver{{Hostname: "ns1", Addresses: []string{"10.0.0.1"}}},
+			current: []Nameserver{{Hostname: "ns1", Addresses: []string{"10.0.0.1", "2001:db8::1", "2001:db8::2"}}},
+			want:    []pdns_client.Rrset{{Type: "AAAA", Changetype: "DELETE", Name: "ns1.example.com."}},
+		},
+		"ipv4 address added": {
+			planned: []Nameserver{{Hostname: "ns1", Addresses: []string{"10.0.0.1", "10.0.0.2", "2001:db8::1"}}},
+			current: []Nameserver{{Hostname: "ns1", Addresses: []string{"2001:db8::1", "10.0.0.1"}}},
+			want:    []pdns_client.Rrset{{Type: "A", Changetype: "REPLACE", Name: "ns1.example.com.", TTL: 300, Records: []pdns_client.Record{{Content: "10.0.0.1"}, {Content: "10.0.0.2"}}}},
+		},
+		"address to addresses, same address": {
+			planned: []Nameserver{{Hostname: "ns1", Addresses: []string{"10.0.0.1"}}},
+			current: []Nameserver{{Hostname: "ns1", Address: new("10.0.0.1")}},
+			want:    []pdns_client.Rrset{},
+		},
+		"addresses to address, same address": {
+			planned: []Nameserver{{Hostname: "ns1", Address: new("2001:db8::1")}},
+			current: []Nameserver{{Hostname: "ns1", Addresses: []string{"2001:DB8:0::1"}}},
+			want:    []pdns_client.Rrset{},
+		},
+		"address to dual-stack addresses": {
+			planned: []Nameserver{{Hostname: "ns1", Addresses: []string{"10.0.0.1", "2001:db8::1"}}},
+			current: []Nameserver{{Hostname: "ns1", Address: new("10.0.0.1")}},
+			want:    []pdns_client.Rrset{{Type: "AAAA", Changetype: "REPLACE", Name: "ns1.example.com.", TTL: 300, Records: []pdns_client.Record{{Content: "2001:db8::1"}}}},
+		},
+		"dual-stack addresses to address": {
+			planned: []Nameserver{{Hostname: "ns1", Address: new("2001:db8::1")}},
+			current: []Nameserver{{Hostname: "ns1", Addresses: []string{"10.0.0.1", "2001:db8::1"}}},
+			want:    []pdns_client.Rrset{{Type: "A", Changetype: "DELETE", Name: "ns1.example.com."}},
+		},
+		"dual-stack removed": {
+			planned: []Nameserver{{Hostname: "ns2"}},
+			current: []Nameserver{{Hostname: "ns1", Addresses: []string{"10.0.0.1", "2001:db8::1"}}, {Hostname: "ns2"}},
+			want: []pdns_client.Rrset{
+				{Type: "A", Changetype: "DELETE", Name: "ns1.example.com."},
+				{Type: "AAAA", Changetype: "DELETE", Name: "ns1.example.com."},
+			},
+		},
+		"dual-stack, ttl changed": {
+			planned:    []Nameserver{{Hostname: "ns1", Addresses: []string{"10.0.0.1", "2001:db8::1"}}},
+			current:    []Nameserver{{Hostname: "ns1", Addresses: []string{"10.0.0.1", "2001:db8::1"}}},
+			rewriteAll: true,
+			want: []pdns_client.Rrset{
+				{Type: "A", Changetype: "REPLACE", Name: "ns1.example.com.", TTL: 300, Records: []pdns_client.Record{{Content: "10.0.0.1"}}},
+				{Type: "AAAA", Changetype: "REPLACE", Name: "ns1.example.com.", TTL: 300, Records: []pdns_client.Record{{Content: "2001:db8::1"}}},
+			},
+		},
+		"dual-stack, hostname respelled, ipv6 removed": {
+			// The glue written for the new spelling is not deleted for the
+			// removed one; the no longer needed AAAA rrset is.
+			planned: []Nameserver{{Hostname: "NS1", Addresses: []string{"10.0.0.2"}}},
+			current: []Nameserver{{Hostname: "ns1", Addresses: []string{"10.0.0.1", "2001:db8::1"}}},
+			want: []pdns_client.Rrset{
+				{Type: "A", Changetype: "REPLACE", Name: "NS1.example.com.", TTL: 300, Records: []pdns_client.Record{{Content: "10.0.0.2"}}},
+				{Type: "AAAA", Changetype: "DELETE", Name: "NS1.example.com."},
 			},
 		},
 		"address changed": {
@@ -593,8 +664,13 @@ func TestNameserverRecordChanges(t *testing.T) {
 			current:  []Nameserver{{Hostname: "ns1", Address: new("10.0.0.1")}, {Hostname: "ns2"}},
 			wantPath: path.Root("nameservers").AtListIndex(2).AtName("address"),
 		},
+		"invalid added addresses element": {
+			planned:  []Nameserver{{Hostname: "ns1", Addresses: []string{"10.0.0.1", "bad"}}},
+			wantPath: path.Root("nameservers").AtListIndex(0).AtName("addresses").AtSetValue(types.StringValue("bad")),
+		},
 		// Removed nameservers are not in the configuration.
-		"invalid deleted address": {current: []Nameserver{{Hostname: "ns1", Address: new("bad")}}, wantPath: path.Empty()},
+		"invalid deleted address":   {current: []Nameserver{{Hostname: "ns1", Address: new("bad")}}, wantPath: path.Empty()},
+		"invalid deleted addresses": {current: []Nameserver{{Hostname: "ns1", Addresses: []string{"bad"}}}, wantPath: path.Empty()},
 	}
 	for name, tc := range errorCases {
 		_, diags := nameserverRecordChanges(ctx, tc.planned, tc.current, "example.com.", 300, false)
@@ -695,19 +771,27 @@ func TestImportNameservers(t *testing.T) {
 				{Content: "ns1.example.com."}, {Content: "ns2.example.com."}, {Content: "ns3.example.com."},
 				{Content: "ns.other.org."}, {Content: "ns.example.com.other.org."},
 			}},
-			{Type: "A", Name: "ns1.example.com.", Records: []pdns_client.Record{{Content: "10.0.0.1"}, {Content: "10.0.0.11"}}},
-			{Type: "AAAA", Name: "ns1.example.com.", Records: []pdns_client.Record{{Content: "2001:db8::1"}}},
+			// Several glue addresses import as addresses, IPv4 first, each sorted by IP.
+			{Type: "AAAA", Name: "ns1.example.com.", Records: []pdns_client.Record{{Content: "2001:db8::10"}, {Content: "2001:db8::9"}}},
+			{Type: "A", Name: "ns1.example.com.", Records: []pdns_client.Record{{Content: "10.0.0.10"}, {Content: "10.0.0.9"}}},
 			{Type: "AAAA", Name: "ns2.example.com.", Records: []pdns_client.Record{{Content: "2001:db8::2"}}},
 			{Type: "A", Name: "ns.other.org.", Records: []pdns_client.Record{{Content: "10.0.0.9"}}},
 		},
 	}
 	imported := func(zone pdns_client.PDNSZone) []string {
 		return lo.Map(importNameservers(zone), func(ns Nameserver, _ int) string {
+			if ns.Address != nil && ns.Addresses != nil {
+				return ns.Hostname + "=address and addresses"
+			}
+			if ns.Addresses != nil {
+				return ns.Hostname + "=[" + strings.Join(ns.Addresses, ",") + "]"
+			}
 			return ns.Hostname + "=" + lo.FromPtrOr(ns.Address, "-")
 		})
 	}
 	// Sorted by name: the server's record order depends on the backend.
-	want := []string{"ns.example.com.other.org.=-", "ns.other.org.=-", "ns1=10.0.0.1", "ns2=2001:db8::2", "ns3=-"}
+	ns1 := "ns1=[10.0.0.9,10.0.0.10,2001:db8::9,2001:db8::10]"
+	want := []string{"ns.example.com.other.org.=-", "ns.other.org.=-", ns1, "ns2=[2001:db8::2]", "ns3=-"}
 	if got := imported(zone); !slices.Equal(got, want) {
 		t.Errorf("importNameservers = %v, want %v", got, want)
 	}
@@ -716,7 +800,7 @@ func TestImportNameservers(t *testing.T) {
 	zone.Rrsets = append(zone.Rrsets, pdns_client.Rrset{Type: "SOA", Name: "example.com.", Records: []pdns_client.Record{
 		{Content: "NS3.example.com. hostmaster.example.com. 1 2 3 4 5"},
 	}})
-	want = []string{"ns3=-", "ns.example.com.other.org.=-", "ns.other.org.=-", "ns1=10.0.0.1", "ns2=2001:db8::2"}
+	want = []string{"ns3=-", "ns.example.com.other.org.=-", "ns.other.org.=-", ns1, "ns2=[2001:db8::2]"}
 	if got := imported(zone); !slices.Equal(got, want) {
 		t.Errorf("importNameservers with SOA = %v, want %v", got, want)
 	}
@@ -753,8 +837,8 @@ func TestImportNameserversIsDeterministic(t *testing.T) {
 		if !slices.Equal(names(got), want) {
 			t.Errorf("order %v: nameservers = %v, want %v", order, names(got), want)
 		}
-		if a := got[1].Address; a == nil || *a != "10.0.0.1" {
-			t.Errorf("order %v: ns1 address = %v, want the lowest glue address 10.0.0.1", order, a)
+		if a := got[1].Addresses; !slices.Equal(a, []string{"10.0.0.1", "10.0.0.9"}) || got[1].Address != nil {
+			t.Errorf("order %v: ns1 addresses = %v, want the sorted glue addresses [10.0.0.1 10.0.0.9]", order, a)
 		}
 	}
 }
@@ -1074,5 +1158,193 @@ func TestRNameValidator(t *testing.T) {
 		if resp.Diagnostics.HasError() {
 			t.Errorf("%s: unexpected error %v", v, resp.Diagnostics)
 		}
+	}
+}
+
+func TestDiffGlueAddresses(t *testing.T) {
+	t.Parallel()
+	tests := map[string]struct {
+		planned, current Nameserver
+		changed          bool
+	}{
+		"address to addresses":       {Nameserver{Hostname: "ns1", Addresses: []string{"10.0.0.1"}}, Nameserver{Hostname: "ns1", Address: new("10.0.0.1")}, false},
+		"addresses to address":       {Nameserver{Hostname: "ns1", Address: new("10.0.0.1")}, Nameserver{Hostname: "ns1", Addresses: []string{"10.0.0.1"}}, false},
+		"addresses reordered":        {Nameserver{Hostname: "ns1", Addresses: []string{"2001:db8::1", "10.0.0.1"}}, Nameserver{Hostname: "ns1", Addresses: []string{"10.0.0.1", "2001:db8::1"}}, false},
+		"ipv6 respelled":             {Nameserver{Hostname: "ns1", Addresses: []string{"2001:DB8:0::1"}}, Nameserver{Hostname: "ns1", Addresses: []string{"2001:db8::1"}}, false},
+		"ipv6 added":                 {Nameserver{Hostname: "ns1", Addresses: []string{"10.0.0.1", "2001:db8::1"}}, Nameserver{Hostname: "ns1", Address: new("10.0.0.1")}, true},
+		"ipv6 removed":               {Nameserver{Hostname: "ns1", Addresses: []string{"10.0.0.1"}}, Nameserver{Hostname: "ns1", Addresses: []string{"10.0.0.1", "2001:db8::1"}}, true},
+		"addresses removed":          {Nameserver{Hostname: "ns1"}, Nameserver{Hostname: "ns1", Addresses: []string{"10.0.0.1"}}, true},
+		"address changed in a set":   {Nameserver{Hostname: "ns1", Addresses: []string{"10.0.0.2", "2001:db8::1"}}, Nameserver{Hostname: "ns1", Addresses: []string{"10.0.0.1", "2001:db8::1"}}, true},
+		"no glue either way":         {Nameserver{Hostname: "ns1"}, Nameserver{Hostname: "ns1"}, false},
+		"empty addresses as no glue": {Nameserver{Hostname: "ns1", Addresses: []string{}}, Nameserver{Hostname: "ns1"}, false},
+	}
+	for name, tt := range tests {
+		addedOrChanged, deleted := Diff([]Nameserver{tt.planned}, []Nameserver{tt.current}, "example.com.")
+		if (len(addedOrChanged) == 1) != tt.changed || len(deleted) != 0 {
+			t.Errorf("%s: addedOrChanged = %v, deleted = %v, want changed = %v", name, hostnames(addedOrChanged), hostnames(deleted), tt.changed)
+		}
+	}
+}
+
+func TestGlueRecords(t *testing.T) {
+	t.Parallel()
+	glue, invalid := glueRecords([]string{"2001:db8::10", "10.0.0.10", "bad", "2001:db8::9", "10.0.0.9"})
+	if !slices.Equal(glue["A"], []string{"10.0.0.9", "10.0.0.10"}) || !slices.Equal(glue["AAAA"], []string{"2001:db8::9", "2001:db8::10"}) {
+		t.Errorf("glue = %v, want A and AAAA sorted by IP", glue)
+	}
+	if !slices.Equal(invalid, []string{"bad"}) {
+		t.Errorf("invalid = %v, want [bad]", invalid)
+	}
+	if glue, invalid := glueRecords(nil); len(glue) != 0 || len(invalid) != 0 {
+		t.Errorf("no addresses: glue = %v, invalid = %v", glue, invalid)
+	}
+}
+
+func TestReadAddresses(t *testing.T) {
+	t.Parallel()
+	rrset := func(typ string, contents ...string) pdns_client.Rrset {
+		return pdns_client.Rrset{Type: typ, Name: "ns1.example.com.", Records: lo.Map(contents, func(c string, _ int) pdns_client.Record { return pdns_client.Record{Content: c} })}
+	}
+	dualStack := []pdns_client.Rrset{rrset("A", "10.0.0.1"), rrset("AAAA", "2001:db8::1")}
+	tests := map[string]struct {
+		rrsets     []pdns_client.Rrset
+		configured []string
+		want       []string
+	}{
+		"unchanged":                {dualStack, []string{"2001:db8::1", "10.0.0.1"}, []string{"2001:db8::1", "10.0.0.1"}},
+		"ipv6 spelling kept":       {dualStack, []string{"10.0.0.1", "2001:DB8:0::1"}, []string{"10.0.0.1", "2001:DB8:0::1"}},
+		"ipv6 removed":             {dualStack[:1], []string{"10.0.0.1", "2001:db8::1"}, []string{"10.0.0.1"}},
+		"ipv4 changed":             {[]pdns_client.Rrset{rrset("A", "10.0.0.2"), dualStack[1]}, []string{"10.0.0.1", "2001:DB8::1"}, []string{"10.0.0.2", "2001:DB8::1"}},
+		"ipv6 added out of band":   {dualStack, []string{"10.0.0.1"}, []string{"10.0.0.1", "2001:db8::1"}},
+		"ipv4 extended":            {[]pdns_client.Rrset{rrset("A", "10.0.0.1", "10.0.0.3"), dualStack[1]}, []string{"10.0.0.1", "2001:db8::1"}, []string{"10.0.0.1", "10.0.0.3", "2001:db8::1"}},
+		"missing":                  {nil, []string{"10.0.0.1", "2001:db8::1"}, nil},
+		"empty rrsets":             {[]pdns_client.Rrset{rrset("A"), rrset("AAAA")}, []string{"10.0.0.1"}, nil},
+		"other name ignored":       {[]pdns_client.Rrset{{Type: "A", Name: "ns2.example.com.", Records: []pdns_client.Record{{Content: "10.0.0.1"}}}}, []string{"10.0.0.1"}, nil},
+		"several of both families": {[]pdns_client.Rrset{rrset("AAAA", "2001:db8::2", "2001:db8::1"), rrset("A", "10.0.0.2", "10.0.0.1")}, []string{"10.0.0.1", "10.0.0.2", "2001:db8::1", "2001:db8::2"}, []string{"10.0.0.1", "10.0.0.2", "2001:db8::1", "2001:db8::2"}},
+	}
+	for name, tt := range tests {
+		got := readAddresses(pdns_client.PDNSZone{Name: "example.com.", Rrsets: tt.rrsets}, "ns1.example.com.", tt.configured)
+		if !slices.Equal(got, tt.want) {
+			t.Errorf("%s: readAddresses = %v, want %v", name, got, tt.want)
+		}
+	}
+}
+
+func TestReadNameserversAddresses(t *testing.T) {
+	t.Parallel()
+	zone := pdns_client.PDNSZone{
+		Name: "example.com.",
+		Rrsets: []pdns_client.Rrset{
+			{Type: "A", Name: "ns1.example.com.", Records: []pdns_client.Record{{Content: "10.0.0.1"}}},
+			{Type: "AAAA", Name: "ns1.example.com.", Records: []pdns_client.Record{{Content: "2001:db8::1"}}},
+		},
+	}
+	read := func(current Nameserver) Nameserver {
+		t.Helper()
+		list, diags := readNameservers(zone, []Nameserver{current})
+		if diags.HasError() {
+			t.Fatal(diags)
+		}
+		var got []Nameserver
+		if diags := list.ElementsAs(context.Background(), &got, false); diags.HasError() {
+			t.Fatal(diags)
+		}
+		return got[0]
+	}
+
+	// The configured attribute is kept: address reads the rrset of its
+	// family only, addresses both.
+	if got := read(Nameserver{Hostname: "ns1", Address: new("10.0.0.1")}); got.Addresses != nil || lo.FromPtr(got.Address) != "10.0.0.1" {
+		t.Errorf("address: %+v", got)
+	}
+	got := read(Nameserver{Hostname: "ns1", Addresses: []string{"10.0.0.1"}})
+	slices.Sort(got.Addresses)
+	if got.Address != nil || !slices.Equal(got.Addresses, []string{"10.0.0.1", "2001:db8::1"}) {
+		t.Errorf("addresses: %+v", got)
+	}
+	// Without glue records, addresses is null like address.
+	if got := read(Nameserver{Hostname: "ns2", Addresses: []string{"10.0.0.2"}}); got.Address != nil || got.Addresses != nil {
+		t.Errorf("addresses without glue: %+v", got)
+	}
+	if got := read(Nameserver{Hostname: "ns2"}); got.Address != nil || got.Addresses != nil {
+		t.Errorf("no glue configured: %+v", got)
+	}
+}
+
+func TestCreateZoneFromDataDualStack(t *testing.T) {
+	t.Parallel()
+	soa := SOAModel{
+		RName: types.StringValue("hostmaster"), Refresh: types.Int64Value(1), Retry: types.Int64Value(2),
+		Expire: types.Int64Value(3), TTL: types.Int64Value(4), CreateRecord: types.BoolValue(false),
+	}
+	zone, _, diags := createZoneFromData(context.Background(), zoneModel(t, []Nameserver{
+		{Hostname: "ns1", Addresses: []string{"2001:db8::1", "10.0.0.10", "10.0.0.9"}},
+		{Hostname: "ns2", Address: new("10.0.0.2")},
+	}, soa))
+	if diags.HasError() {
+		t.Fatal(diags)
+	}
+	got := lo.Map(zone.Rrsets, func(r pdns_client.Rrset, _ int) string {
+		contents := lo.Map(r.Records, func(rec pdns_client.Record, _ int) string { return rec.Content })
+		return fmt.Sprintf("%s %s %d %s", r.Type, r.Name, r.TTL, strings.Join(contents, ","))
+	})
+	want := []string{
+		"NS example.com. 300 ns1.example.com.,ns2.example.com.",
+		"A ns1.example.com. 300 10.0.0.9,10.0.0.10",
+		"AAAA ns1.example.com. 300 2001:db8::1",
+		"A ns2.example.com. 300 10.0.0.2",
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("rrsets =\n%v\nwant\n%v", got, want)
+	}
+
+	_, _, diags = createZoneFromData(context.Background(), zoneModel(t, []Nameserver{{Hostname: "ns1", Addresses: []string{"10.0.0.1", "bad"}}}, soa))
+	want0 := path.Root("nameservers").AtListIndex(0).AtName("addresses").AtSetValue(types.StringValue("bad"))
+	if !diags.HasError() || !diags[0].(diag.DiagnosticWithPath).Path().Equal(want0) {
+		t.Errorf("invalid addresses element: %v, want error at %s", diags, want0)
+	}
+}
+
+func TestDistinctIPAddressesValidator(t *testing.T) {
+	t.Parallel()
+	set := func(addresses ...string) types.Set {
+		return types.SetValueMust(types.StringType, lo.Map(addresses, func(a string, _ int) attr.Value { return types.StringValue(a) }))
+	}
+	tests := map[string]struct {
+		value types.Set
+		valid bool
+	}{
+		"distinct":           {set("10.0.0.1", "10.0.0.2", "2001:db8::1"), true},
+		"ipv6 respelled":     {set("2001:db8::1", "2001:DB8:0::1"), false},
+		"invalid is skipped": {set("bad", "10.0.0.1"), true},
+		"null":               {types.SetNull(types.StringType), true},
+		"unknown":            {types.SetUnknown(types.StringType), true},
+	}
+	for name, tt := range tests {
+		resp := &validator.SetResponse{}
+		distinctIPAddressesValidator{}.ValidateSet(context.Background(), validator.SetRequest{Path: path.Root("addresses"), ConfigValue: tt.value}, resp)
+		if resp.Diagnostics.HasError() == tt.valid {
+			t.Errorf("%s: error = %v, want valid = %v", name, resp.Diagnostics, tt.valid)
+		}
+	}
+}
+
+func TestValidateNameserverAddresses(t *testing.T) {
+	t.Parallel()
+	soa := SOAModel{
+		RName: types.StringValue("hostmaster"), Refresh: types.Int64Value(1), Retry: types.Int64Value(1),
+		Expire: types.Int64Value(1), TTL: types.Int64Value(1), CreateRecord: types.BoolValue(true),
+	}
+	data := zoneModel(t, []Nameserver{
+		{Hostname: "ns1", Addresses: []string{"10.0.0.1", "2001:db8::1"}},
+		{Hostname: "ns2.other.org.", Addresses: []string{"10.0.0.2", "2001:db8::2"}},
+		{Hostname: "ns3.other.org.", Address: new("10.0.0.3")},
+		{Hostname: "ns4.other.org."},
+		{Hostname: "example.com.", Addresses: []string{"10.0.0.5"}},
+	}, soa)
+	got := lo.Map(validateNameserverAddresses(data).Errors(), func(d diag.Diagnostic, _ int) string { return d.(diag.DiagnosticWithPath).Path().String() })
+	want := []string{`nameservers[1].addresses`, `nameservers[2].address`}
+	if !slices.Equal(got, want) {
+		t.Errorf("errors at %v, want %v", got, want)
 	}
 }

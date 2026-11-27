@@ -5,12 +5,17 @@ resource "pdns_zone" "example_com" {
 
   nameservers = [
     {
-      hostname = "ns1",
-      address  = "10.10.10.1"
+      # Dual-stack glue: an A and an AAAA record at ns1.example.com.
+      hostname  = "ns1",
+      addresses = ["10.10.10.1", "2001:db8::1"]
     },
     {
-      hostname = "ns2",
-      address  = "10.10.10.2"
+      hostname  = "ns2",
+      addresses = ["10.10.10.2"]
+    },
+    {
+      # Outside the zone, so without glue records.
+      hostname = "ns.example.net."
     }
   ]
 

@@ -14,6 +14,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/int64validator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/listvalidator"
+	"github.com/hashicorp/terraform-plugin-framework-validators/setvalidator"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -63,9 +64,13 @@ type ZoneResourceModel struct {
 	LockDNSUpdate types.Bool `tfsdk:"lock_dnsupdate"`
 }
 
+// Nameserver is a nameserver of the zone. Its glue addresses are either the
+// single Address or the Addresses (at most one of them is set, see
+// glueAddresses).
 type Nameserver struct {
-	Address  *string `tfsdk:"address"`
-	Hostname string  `tfsdk:"hostname"`
+	Address   *string  `tfsdk:"address"`
+	Addresses []string `tfsdk:"addresses"`
+	Hostname  string   `tfsdk:"hostname"`
 }
 
 type SOA struct {
@@ -148,6 +153,45 @@ func (v ipAddressValidator) ValidateString(_ context.Context, req validator.Stri
 		fmt.Sprintf("%q is not a valid nameserver address: %s.", address, problem))
 }
 
+// addressDeprecation is the deprecation message of the nameserver address.
+const addressDeprecation = "Use addresses instead. address will be removed in a future major version."
+
+// distinctIPAddressesValidator rejects addresses that list one IP address
+// twice in different spellings ("2001:db8::1" and "2001:DB8:0::1"): the set
+// keeps both, but they are one record of the glue rrset.
+type distinctIPAddressesValidator struct{}
+
+func (v distinctIPAddressesValidator) Description(context.Context) string {
+	return "must not list an IP address more than once"
+}
+
+func (v distinctIPAddressesValidator) MarkdownDescription(ctx context.Context) string {
+	return v.Description(ctx)
+}
+
+func (v distinctIPAddressesValidator) ValidateSet(_ context.Context, req validator.SetRequest, resp *validator.SetResponse) {
+	if req.ConfigValue.IsNull() || req.ConfigValue.IsUnknown() {
+		return
+	}
+	seen := map[netip.Addr]string{}
+	for _, element := range req.ConfigValue.Elements() {
+		address, ok := element.(types.String)
+		if !ok || address.IsNull() || address.IsUnknown() {
+			continue
+		}
+		addr, err := netip.ParseAddr(address.ValueString())
+		if err != nil {
+			continue // reported by ipAddressValidator
+		}
+		if other, dup := seen[addr]; dup {
+			resp.Diagnostics.AddAttributeError(req.Path, "Duplicate IP address",
+				fmt.Sprintf("%q and %q are the same IP address. List each address only once.", other, address.ValueString()))
+			continue
+		}
+		seen[addr] = address.ValueString()
+	}
+}
+
 // TODO: Further DNSSec functionality?
 
 func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, resp *resource.SchemaResponse) {
@@ -179,8 +223,9 @@ func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				Computed:            true,
 			},
 			"nameservers": schema.ListNestedAttribute{
-				MarkdownDescription: "The nameservers of the Zone. Each nameserver can only be listed once (hostnames are compared fully qualified and case-insensitively), so it has at most one glue `address`; dual-stack glue (both an A and an AAAA record) is not supported.",
-				Required:            true,
+				MarkdownDescription: "The nameservers of the Zone. Each nameserver can only be listed once (hostnames are compared fully qualified and case-insensitively). " +
+					"Nameservers inside the zone can have glue records, set with `addresses`: one or several addresses, e.g. an IPv4 and an IPv6 address (dual-stack glue).",
+				Required: true,
 				Validators: []validator.List{
 					listvalidator.SizeAtLeast(1),
 				},
@@ -194,10 +239,30 @@ func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 							},
 						},
 						"address": schema.StringAttribute{
-							Optional:    true,
-							Description: "The IP Address of the nameserver. The provider manages it as the A (IPv4) or AAAA (IPv6) glue record at the hostname, holding exactly this address, so it can only be set for nameservers inside the zone. If that record is changed, extended or removed outside of Terraform, the next plan shows the difference and the apply restores it.",
+							Optional:           true,
+							DeprecationMessage: addressDeprecation,
+							Description: "**Deprecated:** use `addresses` instead (`addresses = [\"192.0.2.1\"]`); `address` will be removed in a future major version. " +
+								"Switching from `address` to `addresses` with the same address keeps the glue record. " +
+								"The IP Address of the nameserver. The provider manages it as the A (IPv4) or AAAA (IPv6) glue record at the hostname, holding exactly this address, so it can only be set for nameservers inside the zone. If that record is changed, extended or removed outside of Terraform, the next plan shows the difference and the apply restores it. A record of the other family at the hostname is not managed.",
 							Validators: []validator.String{
 								ipAddressValidator{},
+							},
+						},
+						"addresses": schema.SetAttribute{
+							Optional:    true,
+							ElementType: types.StringType,
+							Description: "The IP addresses of the nameserver (glue), e.g. an IPv4 and an IPv6 address for dual-stack glue; conflicts with the deprecated `address`. " +
+								"The provider manages them as the A record (all IPv4 addresses) and the AAAA record (all IPv6 addresses) at the hostname, " +
+								"holding exactly these addresses: a record of a family without addresses is deleted. Like `address`, it can only be set for " +
+								"nameservers inside the zone, and records changed, extended or removed outside of Terraform show as difference in the next plan " +
+								"and are restored by the apply. Each address can only be listed once (also in another spelling of an IPv6 address). " +
+								"Switching between `address` and `addresses` with the same address keeps the glue record. " +
+								"On import, the glue records of a nameserver inside the zone are always imported as `addresses`, also a single one.",
+							Validators: []validator.Set{
+								setvalidator.SizeAtLeast(1),
+								setvalidator.ValueStringsAre(ipAddressValidator{}),
+								distinctIPAddressesValidator{},
+								setvalidator.ConflictsWith(path.MatchRelative().AtParent().AtName("address")),
 							},
 						},
 					},
@@ -205,7 +270,7 @@ func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 			},
 			"ttl": schema.Int64Attribute{
 				MarkdownDescription: "The TTL (in seconds) of the records the provider writes for the zone: the SOA record, the NS records " +
-					"at the zone apex and the A/AAAA (glue) records of the nameservers with an `address`. Changes are applied in place. " +
+					"at the zone apex and the A/AAAA (glue) records of the nameservers with an `address` or `addresses`. Changes are applied in place. " +
 					"It is read back from the SOA record (from the NS records with `soa.create_record = false`). Not to be confused with " +
 					"`soa.ttl`, the negative caching TTL. Defaults to `" + strconv.Itoa(defaultZoneTTL) + "`.",
 				Optional: true,
@@ -316,7 +381,8 @@ func (r *ZoneResource) ValidateConfig(ctx context.Context, req resource.Validate
 // validateUniqueNameservers rejects nameservers listed more than once, in
 // any spelling of their hostname ("ns1", "ns1.example.com.", "NS1"): the NS
 // rrset cannot hold a record twice (PowerDNS fails the apply with 422
-// "Duplicate record"), and one nameserver cannot have two glue addresses.
+// "Duplicate record"), and its glue records would be written twice. Several
+// glue addresses of one nameserver are listed in its addresses instead.
 func validateUniqueNameservers(data ZoneResourceModel) diag.Diagnostics {
 	var diags diag.Diagnostics
 	if data.Name.IsNull() || data.Name.IsUnknown() {
@@ -342,13 +408,15 @@ func validateUniqueNameservers(data ZoneResourceModel) diag.Diagnostics {
 		}
 		diags.AddAttributeError(path.Root("nameservers").AtListIndex(i).AtName("hostname"), "Duplicate nameserver",
 			fmt.Sprintf("The nameserver %s is listed more than once (at index %d and %d). Each nameserver can only be listed once; "+
-				"a nameserver with both an IPv4 and an IPv6 address (dual-stack glue) is not supported.", fqdn(hostname.ValueString(), zone), j, i))
+				"for a nameserver with several glue addresses, e.g. an IPv4 and an IPv6 address (dual-stack glue), list them in its addresses.",
+				fqdn(hostname.ValueString(), zone), j, i))
 	}
 	return diags
 }
 
-// validateNameserverAddresses rejects addresses of nameservers outside the
-// zone: their glue A/AAAA record would be out of zone, which PowerDNS refuses.
+// validateNameserverAddresses rejects addresses (address or addresses) of
+// nameservers outside the zone: their glue A/AAAA records would be out of
+// zone, which PowerDNS refuses.
 func validateNameserverAddresses(data ZoneResourceModel) diag.Diagnostics {
 	var diags diag.Diagnostics
 	if data.Name.IsNull() || data.Name.IsUnknown() {
@@ -362,14 +430,29 @@ func validateNameserverAddresses(data ZoneResourceModel) diag.Diagnostics {
 			continue
 		}
 		hostname, _ := nameserver.Attributes()["hostname"].(types.String)
-		address, _ := nameserver.Attributes()["address"].(types.String)
-		if hostname.IsNull() || hostname.IsUnknown() || address.IsNull() || address.IsUnknown() {
+		if hostname.IsNull() || hostname.IsUnknown() {
 			continue
 		}
-		if host := fqdn(hostname.ValueString(), zone); !inZone(host, zone) {
-			diags.AddAttributeError(path.Root("nameservers").AtListIndex(i).AtName("address"), "Nameserver address outside the zone",
-				fmt.Sprintf("The nameserver %s is not inside the zone %s, so the zone cannot hold its A/AAAA (glue) record and PowerDNS "+
-					"rejects it as out of zone. Remove address and manage the record in the zone that contains %s.", host, zone, host))
+		host := fqdn(hostname.ValueString(), zone)
+		if inZone(host, zone) {
+			continue
+		}
+		address, _ := nameserver.Attributes()["address"].(types.String)
+		addresses, _ := nameserver.Attributes()["addresses"].(types.Set)
+		for _, attribute := range []struct {
+			name string
+			set  bool
+		}{
+			{"address", !address.IsNull() && !address.IsUnknown()},
+			{"addresses", !addresses.IsNull() && !addresses.IsUnknown()},
+		} {
+			if !attribute.set {
+				continue
+			}
+			name := attribute.name
+			diags.AddAttributeError(path.Root("nameservers").AtListIndex(i).AtName(name), "Nameserver address outside the zone",
+				fmt.Sprintf("The nameserver %s is not inside the zone %s, so the zone cannot hold its A/AAAA (glue) records and PowerDNS "+
+					"rejects them as out of zone. Remove %s and manage the records in the zone that contains %s.", host, zone, name, host))
 		}
 	}
 	return diags
@@ -600,34 +683,17 @@ func createZoneFromData(ctx context.Context, data ZoneResourceModel) (pdns_clien
 	records = append(records, nsRrset(nameservers, name, ttl))
 
 	for index, nameserver := range nameservers {
-		if nameserver.Address == nil {
-			continue
-		}
-
-		var recordType string
-
-		parsedIP := net.ParseIP(*nameserver.Address)
-		if parsedIP == nil {
-			zoneDiags = append(zoneDiags, diag.NewAttributeErrorDiagnostic(path.Root("nameservers").AtListIndex(index).AtName("address"), "Parse Error", "Invalid IPv4 or IPv6 address"))
+		glue, invalid := glueRecords(nameserver.glueAddresses())
+		if len(invalid) > 0 {
+			zoneDiags = append(zoneDiags, diag.NewAttributeErrorDiagnostic(glueAddressPath(path.Root("nameservers").AtListIndex(index), nameserver, invalid[0]),
+				"Parse Error", fmt.Sprintf("%q is not a valid IPv4 or IPv6 address", invalid[0])))
 			return pdns_client.PDNSZone{}, "", zoneDiags
 		}
-
-		if parsedIP.To4() != nil {
-			recordType = "A"
-		} else {
-			recordType = "AAAA"
+		for _, recordType := range glueTypes {
+			if contents := glue[recordType]; len(contents) > 0 {
+				records = append(records, glueRrset(nameserver.Hostname, recordType, contents, ttl))
+			}
 		}
-
-		records = append(records, pdns_client.Rrset{
-			Type: recordType,
-			Name: nameserver.Hostname,
-			TTL:  ttl,
-			Records: []pdns_client.Record{
-				{
-					Content: *nameserver.Address,
-				},
-			},
-		})
 	}
 
 	newZone := pdns_client.PDNSZone{
@@ -751,7 +817,11 @@ func (r *ZoneResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		ns.Changetype = "REPLACE"
 		records = append(records, ns)
 
-		if newSoaData.CreateRecord && (soaChanged || ttlChanged || (len(plan.Nameservers.Elements()) >= 1 && len(state.Nameservers.Elements()) == 0) || !state.Nameservers.Elements()[0].Equal(plan.Nameservers.Elements()[0])) {
+		// The SOA record names the first nameserver as primary, so it is
+		// rewritten when that hostname changes, not for its glue.
+		primaryChanged := len(currentNameservers) == 0 ||
+			fqdn(currentNameservers[0].Hostname, plan.Name.ValueString()) != fqdn(newNameservers[0].Hostname, plan.Name.ValueString())
+		if newSoaData.CreateRecord && (soaChanged || ttlChanged || primaryChanged) {
 			soaRecord := soaRrset(newSoaData, fqdn(newNameservers[0].Hostname, plan.Name.ValueString()), plan.Name.ValueString(), serial, ttl)
 			soaRecord.Changetype = "REPLACE"
 			records = append(records, soaRecord)
@@ -1040,29 +1110,46 @@ func readName(server, configured, zone string) string {
 }
 
 var nameserverAttrTypes = map[string]attr.Type{
-	"address":  types.StringType,
-	"hostname": types.StringType,
+	"address":   types.StringType,
+	"addresses": types.SetType{ElemType: types.StringType},
+	"hostname":  types.StringType,
+}
+
+// stringSetValue returns the strings as set, null for none.
+func stringSetValue(values []string) types.Set {
+	if len(values) == 0 {
+		return types.SetNull(types.StringType)
+	}
+	return types.SetValueMust(types.StringType, lo.Map(values, func(v string, _ int) attr.Value { return types.StringValue(v) }))
 }
 
 // readNameservers maps the configured nameservers to their current state.
-// Hostnames keep their configured spelling. For a nameserver with an address,
-// the address is read from the A or AAAA rrset at its hostname (see
-// readAddress), so a glue record changed or removed out of band shows as a
-// diff instead of failing the refresh. Nameservers without an address keep
-// it unset, even if such a record exists: it is not managed by the provider.
+// Hostnames keep their configured spelling, and glue addresses the attribute
+// they are configured in. For a nameserver with an address, the address is
+// read from the A or AAAA rrset at its hostname (see readAddress); for one
+// with addresses, they are read from both rrsets (see readAddresses). So a
+// glue record changed or removed out of band shows as a diff instead of
+// failing the refresh. Nameservers without address and addresses keep them
+// unset, even if such records exist: they are not managed by the provider.
 func readNameservers(zone pdns_client.PDNSZone, current []Nameserver) (types.List, diag.Diagnostics) {
 	listType := types.ObjectType{AttrTypes: nameserverAttrTypes}
 	elements := make([]attr.Value, 0, len(current))
 
 	for _, item := range current {
+		hostname := fqdn(item.Hostname, zone.Name)
 		address := item.Address
 		if address != nil {
-			address = readAddress(zone, fqdn(item.Hostname, zone.Name), *address)
+			address = readAddress(zone, hostname, *address)
+		}
+		addresses := types.SetNull(types.StringType)
+		if item.Addresses != nil {
+			addresses = stringSetValue(readAddresses(zone, hostname, item.Addresses))
 		}
 
 		objValue, diags := types.ObjectValue(nameserverAttrTypes, map[string]attr.Value{
-			"address":  types.StringPointerValue(address),
-			"hostname": types.StringValue(item.Hostname),
+			"address":   types.StringPointerValue(address),
+			"addresses": addresses,
+			"hostname":  types.StringValue(item.Hostname),
 		})
 		if diags.HasError() {
 			return types.ListNull(listType), diags
@@ -1091,9 +1178,10 @@ func readZoneNameservers(ctx context.Context, zone pdns_client.PDNSZone, current
 // rrset. The provider writes the first nameserver as primary (mname) of the
 // SOA record, so that one comes first; the others follow in the order the
 // server returns them (PowerDNS sorts them). Hostnames inside the zone are
-// relative to it, like the provider accepts them; their address is the
-// first A record at that name, or else the first AAAA record (glue).
-// Nameservers outside the zone get no address.
+// relative to it, like the provider accepts them; their glue is read from the
+// A and AAAA records at that name as addresses (never the deprecated
+// address, also for a single record), IPv4 before IPv6 and each sorted by IP.
+// Nameservers outside the zone get no addresses.
 func importNameservers(zone pdns_client.PDNSZone) []Nameserver {
 	nsRrset, _ := lo.Find(zone.Rrsets, func(rr pdns_client.Rrset) bool {
 		return rr.Type == "NS" && sameDNSName(rr.Name, zone.Name)
@@ -1120,11 +1208,9 @@ func importNameservers(zone pdns_client.PDNSZone) []Nameserver {
 		if ns.Hostname == record.Content {
 			return ns
 		}
-		a, aaaa := addressRecords(zone, record.Content, "A"), addressRecords(zone, record.Content, "AAAA")
-		slices.Sort(a)
-		slices.Sort(aaaa)
-		if glue := append(a, aaaa...); len(glue) > 0 {
-			ns.Address = &glue[0]
+		glue, _ := glueRecords(append(addressRecords(zone, record.Content, "A"), addressRecords(zone, record.Content, "AAAA")...))
+		if addresses := append(glue["A"], glue["AAAA"]...); len(addresses) > 0 {
+			ns.Addresses = addresses
 		}
 		return ns
 	})
@@ -1168,6 +1254,30 @@ func readAddress(zone pdns_client.PDNSZone, hostname, configured string) *string
 		return &records[0]
 	}
 	return nil
+}
+
+// readAddresses returns the current addresses of a nameserver whose
+// addresses are configured as configured. The provider writes the A and AAAA
+// rrsets at the hostname with exactly the configured addresses of their
+// family, so all records of both rrsets are returned: configured itself if
+// they hold the same addresses (compared as IP), otherwise the records, each
+// in its configured spelling if it is configured, so the apply restores the
+// configured addresses. With no A or AAAA record at all, nil is returned
+// (the glue records are missing and are re-created on apply).
+func readAddresses(zone pdns_client.PDNSZone, hostname string, configured []string) []string {
+	records := append(addressRecords(zone, hostname, "A"), addressRecords(zone, hostname, "AAAA")...)
+	if len(records) == 0 {
+		return nil
+	}
+	if sameGlue(records, configured) {
+		return configured
+	}
+	return lo.Uniq(lo.Map(records, func(record string, _ int) string {
+		if spelling, found := lo.Find(configured, func(c string) bool { return canonicalIP(c) == canonicalIP(record) }); found {
+			return spelling
+		}
+		return record
+	}))
 }
 
 // addressRecordType returns "A" or "AAAA" for an IP address, or false if the
@@ -1232,13 +1342,15 @@ func mastersValue(masters []string, prior types.List) types.List {
 }
 
 // nameserverRecordChanges builds the A/AAAA (glue) rrset changes from the
-// current to the planned nameservers: glue of added or changed nameservers is
-// written with the given TTL, and glue that is no longer needed is deleted.
-// That is the glue of removed nameservers, and of nameservers whose address
-// was removed or changed to the other address family (Diff reports both as
-// changed). With rewriteAll (the TTL changed) the glue of every planned
-// nameserver is written. Errors of planned nameservers point at their index
-// in the configuration.
+// current to the planned nameservers. The glue of a nameserver is one A rrset
+// with its IPv4 and one AAAA rrset with its IPv6 addresses (from address or
+// addresses), and changes are made per rrset: of an added or changed
+// nameserver, an rrset whose addresses changed is written with the given
+// TTL, and one without addresses that existed before is deleted, while an
+// unchanged rrset is left alone (e.g. the A rrset when an IPv6 address is
+// added). The glue of removed nameservers is deleted. With rewriteAll (the
+// TTL changed) every glue rrset of the planned nameservers is written.
+// Errors of planned nameservers point at their index in the configuration.
 func nameserverRecordChanges(ctx context.Context, planned, current []Nameserver, zoneName string, ttl int64, rewriteAll bool) ([]pdns_client.Rrset, diag.Diagnostics) {
 	var diags diag.Diagnostics
 	addedOrChanged, deleted := Diff(planned, current, zoneName)
@@ -1247,70 +1359,73 @@ func nameserverRecordChanges(ctx context.Context, planned, current []Nameserver,
 	records := make([]pdns_client.Rrset, 0, len(planned)+len(deleted))
 
 	for i, nameserver := range planned {
-		if !rewriteAll && !changed[nameserverKey(nameserver.Hostname, zoneName)] {
+		key := nameserverKey(nameserver.Hostname, zoneName)
+		if !rewriteAll && !changed[key] {
 			continue
 		}
 		attrPath := path.Root("nameservers").AtListIndex(i)
-		var recordType string
-		if nameserver.Address == nil {
-			tflog.Info(ctx, "Skipping nameserver A or AAAA record, because Address is not set.", map[string]any{"path": attrPath.String()})
-		} else {
-			var ok bool
-			recordType, ok = addressRecordType(*nameserver.Address)
-			if !ok {
-				diags.AddAttributeError(attrPath.AtName("address"), "Parse Error", fmt.Sprintf("%q is not a valid IPv4 or IPv6 address", *nameserver.Address))
-				return nil, diags
-			}
-
-			records = append(records, pdns_client.Rrset{
-				Type:       recordType,
-				Changetype: "REPLACE",
-				Name:       fqdn(nameserver.Hostname, zoneName),
-				TTL:        ttl,
-				Records: []pdns_client.Record{
-					{
-						Content: *nameserver.Address,
-					},
-				},
-			})
+		glue, invalid := glueRecords(nameserver.glueAddresses())
+		if len(invalid) > 0 {
+			diags.AddAttributeError(glueAddressPath(attrPath, nameserver, invalid[0]), "Parse Error", fmt.Sprintf("%q is not a valid IPv4 or IPv6 address", invalid[0]))
+			return nil, diags
 		}
+		if len(glue) == 0 {
+			tflog.Info(ctx, "Skipping nameserver A or AAAA record, because neither address nor addresses is set.", map[string]any{"path": attrPath.String()})
+		}
+		// Invalid addresses in the state have no rrset to delete.
+		previousGlue, _ := glueRecords(previous[key].glueAddresses())
 
-		// The glue of the previous address is orphaned unless it was just
-		// replaced by a record of the same type.
-		if prev, ok := previous[nameserverKey(nameserver.Hostname, zoneName)]; ok && prev.Address != nil {
-			if prevType, ok := addressRecordType(*prev.Address); ok && prevType != recordType {
-				records = append(records, pdns_client.Rrset{
-					Type:       prevType,
-					Changetype: "DELETE",
-					Name:       fqdn(nameserver.Hostname, zoneName),
-				})
+		for _, recordType := range glueTypes {
+			contents, before := glue[recordType], previousGlue[recordType]
+			switch {
+			case len(contents) > 0 && (rewriteAll || !sameGlue(contents, before)):
+				rrset := glueRrset(fqdn(nameserver.Hostname, zoneName), recordType, contents, ttl)
+				rrset.Changetype = "REPLACE"
+				records = append(records, rrset)
+			case len(contents) == 0 && len(before) > 0:
+				// The glue of this family is no longer needed.
+				records = append(records, pdns_client.Rrset{Type: recordType, Changetype: "DELETE", Name: fqdn(nameserver.Hostname, zoneName)})
 			}
 		}
 	}
 
 	for _, nameserver := range deleted {
-		if nameserver.Address == nil {
-			// No address, so there is no glue record to delete.
-			continue
-		}
-
-		// A removed nameserver is no longer in the configuration, so the
-		// error has no attribute path.
-		recordType, ok := addressRecordType(*nameserver.Address)
-		if !ok {
+		glue, invalid := glueRecords(nameserver.glueAddresses())
+		if len(invalid) > 0 {
+			// A removed nameserver is no longer in the configuration, so the
+			// error has no attribute path.
 			diags.AddError("Parse Error", fmt.Sprintf("The removed nameserver %s has the invalid address %q in the state, so its glue record cannot be deleted.",
-				fqdn(nameserver.Hostname, zoneName), *nameserver.Address))
+				fqdn(nameserver.Hostname, zoneName), invalid[0]))
 			return nil, diags
 		}
-
-		records = append(records, pdns_client.Rrset{
-			Type:       recordType,
-			Changetype: "DELETE",
-			Name:       fqdn(nameserver.Hostname, zoneName),
-		})
+		for _, recordType := range glueTypes {
+			if len(glue[recordType]) > 0 {
+				records = append(records, pdns_client.Rrset{Type: recordType, Changetype: "DELETE", Name: fqdn(nameserver.Hostname, zoneName)})
+			}
+		}
 	}
 
 	return withoutReplacedDeletes(records), diags
+}
+
+// glueRrset builds the glue rrset of the given type at the fully qualified
+// hostname of a nameserver, with the given contents and TTL.
+func glueRrset(hostname, recordType string, contents []string, ttl int64) pdns_client.Rrset {
+	return pdns_client.Rrset{
+		Type:    recordType,
+		Name:    hostname,
+		TTL:     ttl,
+		Records: lo.Map(contents, func(c string, _ int) pdns_client.Record { return pdns_client.Record{Content: c} }),
+	}
+}
+
+// glueAddressPath returns the path of the glue address of the nameserver at
+// nameserverPath: its address, or the element of its addresses.
+func glueAddressPath(nameserverPath path.Path, nameserver Nameserver, address string) path.Path {
+	if nameserver.Address != nil {
+		return nameserverPath.AtName("address")
+	}
+	return nameserverPath.AtName("addresses").AtSetValue(types.StringValue(address))
 }
 
 // withoutReplacedDeletes drops the DELETE changes of rrsets that are also

@@ -1,10 +1,20 @@
 package provider
 
+import (
+	"net"
+	"net/netip"
+	"slices"
+
+	"github.com/samber/lo"
+)
+
 // Diff compares the planned nameservers a with the current ones b of the
 // zone. Nameservers are identified by their fully qualified, lowercased
 // hostname, so respelling a hostname ("ns1", "ns1.example.com.", "NS1") is
-// no change. It returns the added nameservers and those whose address
-// changed, and the removed ones.
+// no change. It returns the added nameservers and those whose glue addresses
+// changed, and the removed ones. Glue addresses compare as IP addresses
+// regardless of their spelling, order and attribute, so moving an address
+// from address to addresses is no change either.
 func Diff(a, b []Nameserver, zone string) ([]Nameserver, []Nameserver) {
 	oldState := make(map[string]Nameserver)
 	var order []string
@@ -23,9 +33,7 @@ func Diff(a, b []Nameserver, zone string) ([]Nameserver, []Nameserver) {
 	for _, ns := range a {
 		key := nameserverKey(ns.Hostname, zone)
 		oldNs, exists := oldState[key]
-		// Compare addresses by value: plan and state are decoded separately,
-		// so equal addresses never share a pointer.
-		if !exists || !equalAddress(oldNs.Address, ns.Address) {
+		if !exists || !sameGlue(oldNs.glueAddresses(), ns.glueAddresses()) {
 			// If not in old state, or if any value has changed
 			addedOrChanged = append(addedOrChanged, ns)
 		}
@@ -58,9 +66,59 @@ func asciiLowerString(s string) string {
 	return string(b)
 }
 
-func equalAddress(a, b *string) bool {
-	if a == nil || b == nil {
-		return a == b
+// glueTypes are the types of the glue rrsets of a nameserver.
+var glueTypes = []string{"A", "AAAA"}
+
+// glueAddresses returns the glue addresses of the nameserver: its address,
+// or else its addresses (at most one of them is set).
+func (ns Nameserver) glueAddresses() []string {
+	if ns.Address != nil {
+		return []string{*ns.Address}
 	}
-	return *a == *b
+	return ns.Addresses
+}
+
+// glueRecords splits glue addresses by the type of their rrset: IPv4
+// addresses are the contents of the A rrset, IPv6 addresses those of the
+// AAAA rrset, each sorted by IP. Types without addresses are not in the map.
+// Addresses that are no IP address are returned as invalid.
+func glueRecords(addresses []string) (map[string][]string, []string) {
+	glue := map[string][]string{}
+	var invalid []string
+	for _, address := range addresses {
+		recordType, ok := addressRecordType(address)
+		if !ok {
+			invalid = append(invalid, address)
+			continue
+		}
+		glue[recordType] = append(glue[recordType], address)
+	}
+	for _, contents := range glue {
+		slices.SortStableFunc(contents, func(a, b string) int {
+			return netip.MustParseAddr(canonicalIP(a)).Compare(netip.MustParseAddr(canonicalIP(b)))
+		})
+	}
+	return glue, invalid
+}
+
+// sameGlue reports whether a and b hold the same IP addresses, in any order
+// and spelling ("2001:db8::1" and "2001:DB8:0::1" are the same address).
+func sameGlue(a, b []string) bool {
+	canonical := func(addresses []string) []string {
+		c := lo.Map(addresses, func(address string, _ int) string { return canonicalIP(address) })
+		slices.Sort(c)
+		return slices.Compact(c)
+	}
+	return slices.Equal(canonical(a), canonical(b))
+}
+
+// canonicalIP returns an IP address in its canonical spelling (IPv6
+// lowercased and shortest, IPv4-mapped IPv6 as IPv4), so that spellings of
+// one address compare equal. Anything else is returned unchanged.
+func canonicalIP(address string) string {
+	ip := net.ParseIP(address)
+	if ip == nil {
+		return address
+	}
+	return ip.String()
 }
