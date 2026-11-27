@@ -6,6 +6,7 @@ description: |-
   Attaches a TSIG key to a zone. A key can be attached to many zones and a zone can have many keys; use exactly one pdns_zone_tsig_key per zone and key pair, and enable one or more purposes on it.
   dnsupdate only takes effect when the PowerDNS server runs with dnsupdate=yes; the source addresses allowed to send updates are controlled by the allow-dnsupdate-from setting (or the ALLOW-DNSUPDATE-FROM zone metadata).
   Concurrency: PowerDNS stores the TSIG keys of a zone as one list per purpose and has no atomic add or remove, so every change rewrites the whole list. Changes within one run are serialized. Across parallel runs, each change is re-read, retried on conflict and re-checked after one second. This is not a guarantee: to rule out lost or reappearing entries, serialize applies that touch the same zone.
+  Replacement: changing zone or tsig_key_id replaces the attachment, and by default the old one is destroyed before the new one is created. If it was the zone's only key with dnsupdate (e.g. when swapping the key of a zone), TSIG-ALLOW-DNSUPDATE is empty in between, and unless the server runs with dnsupdate-require-tsig=yes or the zone has lock_dnsupdate = true, unsigned updates from allow-dnsupdate-from are accepted in that window. Set lifecycle { create_before_destroy = true } on attachments with dnsupdate = true to add the new key before removing the old one. Two caveats: it fails with HTTP 422 when secondary = true (a zone has only one secondary key), and it propagates to the referenced pdns_tsig_key, whose replacement then fails with HTTP 409 when it keeps its name (an algorithm change); rename the key in the same change.
 ---
 
 # pdns_zone_tsig_key (Resource)
@@ -15,6 +16,8 @@ Attaches a TSIG key to a zone. A key can be attached to many zones and a zone ca
 `dnsupdate` only takes effect when the PowerDNS server runs with `dnsupdate=yes`; the source addresses allowed to send updates are controlled by the `allow-dnsupdate-from` setting (or the `ALLOW-DNSUPDATE-FROM` zone metadata).
 
 **Concurrency:** PowerDNS stores the TSIG keys of a zone as one list per purpose and has no atomic add or remove, so every change rewrites the whole list. Changes within one run are serialized. Across parallel runs, each change is re-read, retried on conflict and re-checked after one second. This is not a guarantee: to rule out lost or reappearing entries, serialize applies that touch the same zone.
+
+**Replacement:** changing `zone` or `tsig_key_id` replaces the attachment, and by default the old one is destroyed before the new one is created. If it was the zone's only key with `dnsupdate` (e.g. when swapping the key of a zone), `TSIG-ALLOW-DNSUPDATE` is empty in between, and unless the server runs with `dnsupdate-require-tsig=yes` or the zone has `lock_dnsupdate = true`, unsigned updates from `allow-dnsupdate-from` are accepted in that window. Set `lifecycle { create_before_destroy = true }` on attachments with `dnsupdate = true` to add the new key before removing the old one. Two caveats: it fails with HTTP 422 when `secondary = true` (a zone has only one secondary key), and it propagates to the referenced `pdns_tsig_key`, whose replacement then fails with HTTP 409 when it keeps its name (an `algorithm` change); rename the key in the same change.
 
 ## Example Usage
 
@@ -36,12 +39,22 @@ resource "pdns_zone_tsig_key" "tenant_a_example_com" {
   tsig_key_id = pdns_tsig_key.tenant_a.id
   dnsupdate   = true
   axfr        = true
+
+  # On replacement (another zone or key), add the new key before removing the
+  # old one, so that TSIG-ALLOW-DNSUPDATE is never empty in between.
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 resource "pdns_zone_tsig_key" "tenant_a_example_org" {
   zone        = "example.org."
   tsig_key_id = pdns_tsig_key.tenant_a.id
   dnsupdate   = true
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 
 # Several keys on one zone.
@@ -49,6 +62,10 @@ resource "pdns_zone_tsig_key" "tenant_b_example_com" {
   zone        = "example.com."
   tsig_key_id = pdns_tsig_key.tenant_b.id
   dnsupdate   = true
+
+  lifecycle {
+    create_before_destroy = true
+  }
 }
 ```
 
