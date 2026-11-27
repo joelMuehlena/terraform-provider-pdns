@@ -51,7 +51,31 @@ func isNotFound(err error) bool {
 	return errors.As(err, &zoneNotFound) || errors.As(err, &keyNotFound)
 }
 
-// sameDNSName compares two DNS names case-insensitively, ignoring a trailing dot.
+// sameDNSName compares two DNS names, ignoring a trailing dot. Like DNS
+// (RFC 4343) only ASCII letters compare case-insensitively.
 func sameDNSName(a, b string) bool {
-	return strings.EqualFold(strings.TrimSuffix(a, "."), strings.TrimSuffix(b, "."))
+	return asciiEqualFold(strings.TrimSuffix(a, "."), strings.TrimSuffix(b, "."))
+}
+
+// asciiEqualFold reports whether a and b are equal, comparing ASCII letters
+// case-insensitively and every other byte exactly. Unlike strings.EqualFold
+// it applies no Unicode case folding, which DNS does not know (e.g. U+212A
+// KELVIN SIGN is not "k").
+func asciiEqualFold(a, b string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := 0; i < len(a); i++ {
+		if asciiLower(a[i]) != asciiLower(b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func asciiLower(c byte) byte {
+	if 'A' <= c && c <= 'Z' {
+		return c + 'a' - 'A'
+	}
+	return c
 }
