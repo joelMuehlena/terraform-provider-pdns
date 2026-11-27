@@ -157,6 +157,13 @@ func TestAccZoneTSIGKeyResource(t *testing.T) {
 				ImportStateId:     z1 + ":" + s.keys[3] + ".",
 				ImportStateVerify: true,
 			},
+			{
+				// Without the trailing dots: the same state, no replacement.
+				ResourceName:      "pdns_zone_tsig_key.d",
+				ImportState:       true,
+				ImportStateId:     strings.TrimSuffix(z1, ".") + ":" + s.keys[3],
+				ImportStateVerify: true,
+			},
 		},
 	})
 }

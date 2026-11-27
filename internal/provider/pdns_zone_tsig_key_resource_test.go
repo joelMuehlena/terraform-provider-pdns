@@ -124,6 +124,13 @@ func TestZoneTSIGKeyResource(t *testing.T) {
 				ImportStateId:     "z1.test.:tenant-b.",
 				ImportStateVerify: true,
 			},
+			{
+				// Without the trailing dots, as for pdns_record: the same state.
+				ResourceName:      "pdns_zone_tsig_key.b_z1",
+				ImportState:       true,
+				ImportStateId:     "z1.test:tenant-b",
+				ImportStateVerify: true,
+			},
 		},
 	})
 }
