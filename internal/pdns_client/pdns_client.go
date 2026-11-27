@@ -75,11 +75,10 @@ func (client *PDNSClient) ensureServer(ctx context.Context) error {
 		return nil
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, client.serverURL(), nil)
+	req, err := client.newRequest(ctx, http.MethodGet, client.serverURL(), nil)
 	if err != nil {
 		return err
 	}
-	req.Header.Add("X-API-Key", client.apiKey)
 	resp, err := client.httpClient.Do(req)
 	if err != nil {
 		return err
@@ -152,24 +151,36 @@ type Record struct {
 	Disabled bool   `json:"disabled,omitempty"`
 }
 
+// newRequest builds a request to the PDNS API with the headers every request
+// carries. PowerDNS only reports the cause of an error, such as a database
+// error in an HTTP 500, when the request asks for JSON: 4.9 and 5.0 need
+// Accept: application/json, 5.1 an Accept or a JSON Content-Type header.
+// Otherwise they answer a bare text/plain "Internal Server Error". Both
+// headers are sent on every request, also on those without a body.
+func (client *PDNSClient) newRequest(ctx context.Context, method, rawURL string, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, rawURL, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("X-API-Key", client.apiKey)
+	return req, nil
+}
+
 func (client *PDNSClient) getReq(ctx context.Context, method string, apiPath string, body io.Reader) (*http.Request, error) {
-	req, err := http.NewRequestWithContext(
-		ctx,
-		method,
-		client.serverURL()+"/"+apiPath,
-		body,
-	)
+	req, err := client.newRequest(ctx, method, client.serverURL()+"/"+apiPath, body)
 	if err != nil {
 		return nil, err
 	}
 
+	headers := req.Header.Clone()
+	headers.Del("X-API-Key")
 	tflog.Debug(ctx, "Constructed HTTP Request for PDNS API", map[string]any{
 		"url":     req.URL,
-		"headers": req.Header,
+		"headers": headers,
 		"method":  req.Method,
 	})
-
-	req.Header.Add("X-API-Key", client.apiKey)
 
 	return req, nil
 }
@@ -317,22 +328,23 @@ func (client *PDNSClient) UpdateZoneMasters(ctx context.Context, zoneID string, 
 const patchDeadlockRetries = 4
 
 // isPatchDeadlock reports whether a failed rrset PATCH looks like a gpgsql
-// deadlock between concurrent PATCHes of the same zone. PowerDNS reports one
-// in several ways:
+// deadlock between concurrent PATCHes of the same zone. Because the client
+// asks for JSON (see newRequest), PowerDNS includes the backend message in
+// the error, and reports a deadlock as:
 //
 //   - the PostgreSQL message "deadlock detected" in the body, with HTTP 500
-//     (deleting or inserting records) or 422 ("Failed to rectify ...");
-//   - a bare HTTP 500 "Internal Server Error": 4.9 and 5.0 never include the
-//     backend message in a 500, and 5.1 only when the request has a JSON
-//     Content-Type, which this client does not send. The pdns log then shows
-//     the deadlock;
-//   - HTTP 422 "Failed to rectify ..." with a GSQLBackend message (5.1), also
-//     when the PostgreSQL message is localized.
+//     (deleting or inserting records, and on 4.9 and 5.0 rectifying) or 422
+//     ("Failed to rectify ...", 5.1);
+//   - an HTTP 500 with a GSQLBackend message, or an HTTP 422 "Failed to
+//     rectify ..." with one, when the PostgreSQL message is localized;
+//   - a bare HTTP 500 "Internal Server Error" when the server does not send
+//     details anyway (4.9 and 5.0 only send them with Accept:
+//     application/json, 5.1 with an Accept or a JSON Content-Type header).
 //
-// A bare 500 is also what 4.9 and 5.0 answer for other database errors, such
-// as a value too long for its column. Retrying those is harmless (REPLACE and
-// DELETE are idempotent) and only delays the error. Validation errors are a
-// 422 with a different message and are not retried.
+// A GSQLBackend 500 is also what the server answers for other database
+// errors, such as a value too long for its column. Retrying those is harmless
+// (REPLACE and DELETE are idempotent) and only delays the error. Validation
+// errors are a 422 with a different message and are not retried.
 func isPatchDeadlock(err error) bool {
 	se, ok := errors.AsType[*statusError](err)
 	if !ok {
@@ -343,7 +355,7 @@ func isPatchDeadlock(err error) bool {
 	case strings.Contains(body, "deadlock detected"):
 		return true
 	case se.StatusCode == http.StatusInternalServerError:
-		return isGenericInternalServerError(body)
+		return strings.Contains(body, "GSQLBackend") || isGenericInternalServerError(body)
 	case se.StatusCode == http.StatusUnprocessableEntity:
 		return strings.Contains(body, "Failed to rectify") && strings.Contains(body, "GSQLBackend")
 	}
