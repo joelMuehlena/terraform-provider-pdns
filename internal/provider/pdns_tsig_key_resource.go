@@ -62,7 +62,14 @@ func (r *TSIGKeyResource) Schema(ctx context.Context, req resource.SchemaRequest
 			"Attach the key to zones with `pdns_zone_tsig_key`.\n\n" +
 			"**Note:** with the `gpgsql` backend before PowerDNS 5.1, changing the secret of an existing key fails with HTTP 500, " +
 			"because the default `gpgsql-set-tsig-key-query` is a plain `INSERT`. Use PowerDNS >= 5.1 or set the query to the 5.1 default: " +
-			"`insert into tsigkeys (name,algorithm,secret) values($1,$2,$3) on conflict(name,algorithm) do update set secret=Excluded.secret`.",
+			"`insert into tsigkeys (name,algorithm,secret) values($1,$2,$3) on conflict(name,algorithm) do update set secret=Excluded.secret`.\n\n" +
+			"**Importing a key managed with `key_wo`:** the import cannot know that the secret is write-only (`key_wo_version` is " +
+			"not set yet), so it stores the secret in `key` in state. The next apply sets `key_wo_version`, re-sends `key_wo` to " +
+			"PowerDNS and removes `key` from state. Hence: set `key_wo` to the current secret (or to a new one to rotate it), and " +
+			"apply right after the import, ideally by importing with an `import` block so that import and update happen in one apply. " +
+			"On `gpgsql` before PowerDNS 5.1 that apply fails with HTTP 500 (see the note above) even if the secret is unchanged, " +
+			"so change the query first. Treat the secret as exposed to whoever can read earlier state versions and backups, and " +
+			"rotate it (bump `key_wo_version`) if that matters.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				MarkdownDescription: "The PowerDNS ID of the TSIG key (usually the name with a trailing dot). Use this to attach the key to zones.",

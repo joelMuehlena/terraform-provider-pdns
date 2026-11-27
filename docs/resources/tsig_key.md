@@ -5,6 +5,7 @@ subcategory: ""
 description: |-
   Manages a PowerDNS TSIG key. The secret is supplied either through key (stored in state) or through the write-only key_wo (never stored in state or plan; requires Terraform >= 1.11 or OpenTofu >= 1.11). Attach the key to zones with pdns_zone_tsig_key.
   Note: with the gpgsql backend before PowerDNS 5.1, changing the secret of an existing key fails with HTTP 500, because the default gpgsql-set-tsig-key-query is a plain INSERT. Use PowerDNS >= 5.1 or set the query to the 5.1 default: insert into tsigkeys (name,algorithm,secret) values($1,$2,$3) on conflict(name,algorithm) do update set secret=Excluded.secret.
+  Importing a key managed with key_wo: the import cannot know that the secret is write-only (key_wo_version is not set yet), so it stores the secret in key in state. The next apply sets key_wo_version, re-sends key_wo to PowerDNS and removes key from state. Hence: set key_wo to the current secret (or to a new one to rotate it), and apply right after the import, ideally by importing with an import block so that import and update happen in one apply. On gpgsql before PowerDNS 5.1 that apply fails with HTTP 500 (see the note above) even if the secret is unchanged, so change the query first. Treat the secret as exposed to whoever can read earlier state versions and backups, and rotate it (bump key_wo_version) if that matters.
 ---
 
 # pdns_tsig_key (Resource)
@@ -12,6 +13,8 @@ description: |-
 Manages a PowerDNS TSIG key. The secret is supplied either through `key` (stored in state) or through the write-only `key_wo` (never stored in state or plan; requires Terraform >= 1.11 or OpenTofu >= 1.11). Attach the key to zones with `pdns_zone_tsig_key`.
 
 **Note:** with the `gpgsql` backend before PowerDNS 5.1, changing the secret of an existing key fails with HTTP 500, because the default `gpgsql-set-tsig-key-query` is a plain `INSERT`. Use PowerDNS >= 5.1 or set the query to the 5.1 default: `insert into tsigkeys (name,algorithm,secret) values($1,$2,$3) on conflict(name,algorithm) do update set secret=Excluded.secret`.
+
+**Importing a key managed with `key_wo`:** the import cannot know that the secret is write-only (`key_wo_version` is not set yet), so it stores the secret in `key` in state. The next apply sets `key_wo_version`, re-sends `key_wo` to PowerDNS and removes `key` from state. Hence: set `key_wo` to the current secret (or to a new one to rotate it), and apply right after the import, ideally by importing with an `import` block so that import and update happen in one apply. On `gpgsql` before PowerDNS 5.1 that apply fails with HTTP 500 (see the note above) even if the secret is unchanged, so change the query first. Treat the secret as exposed to whoever can read earlier state versions and backups, and rotate it (bump `key_wo_version`) if that matters.
 
 ## Example Usage
 
@@ -93,4 +96,7 @@ The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/c
 ```shell
 # TSIG keys are imported by their PowerDNS id (the name with a trailing dot).
 terraform import pdns_tsig_key.tenant_a tenant-a.
+
+# A key managed with `key_wo` gets its secret stored in `key` on import, until
+# the next apply re-sends `key_wo`: see the note on importing above.
 ```

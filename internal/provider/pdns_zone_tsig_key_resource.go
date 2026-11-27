@@ -98,7 +98,15 @@ func (r *ZoneTSIGKeyResource) Schema(ctx context.Context, req resource.SchemaReq
 			"**Concurrency:** PowerDNS stores the TSIG keys of a zone as one list per purpose and has no atomic add or remove, so every " +
 			"change rewrites the whole list. Changes within one run are serialized. Across parallel runs, each change is re-read, " +
 			"retried on conflict and re-checked after one second. This is not a guarantee: to rule out lost or reappearing entries, " +
-			"serialize applies that touch the same zone.",
+			"serialize applies that touch the same zone.\n\n" +
+			"**Replacement:** changing `zone` or `tsig_key_id` replaces the attachment, and by default the old one is destroyed " +
+			"before the new one is created. If it was the zone's only key with `dnsupdate` (e.g. when swapping the key of a zone), " +
+			"`TSIG-ALLOW-DNSUPDATE` is empty in between, and unless the server runs with `dnsupdate-require-tsig=yes` or the zone has `lock_dnsupdate = true`, " +
+			"unsigned updates from `allow-dnsupdate-from` are accepted in that window. Set `lifecycle { create_before_destroy = true }` " +
+			"on attachments with `dnsupdate = true` to add the new key before removing the old one. Two caveats: it fails with " +
+			"HTTP 422 when `secondary = true` (a zone has only one secondary key), and it propagates to the referenced " +
+			"`pdns_tsig_key`, whose replacement then fails with HTTP 409 when it keeps its name (an `algorithm` change); rename " +
+			"the key in the same change.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				MarkdownDescription: "Identifier of the attachment in the form `<zone>:<tsig_key_id>`.",
