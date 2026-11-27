@@ -1,15 +1,22 @@
 package provider
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"os"
 	"regexp"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
+	fwresource "github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
+	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
@@ -658,4 +665,47 @@ resource "pdns_record" "r%[1]d" {
 			},
 		}},
 	})
+}
+
+// TestRecordResourceReadWarnsWhenDeleted checks that a record deleted out of
+// band is removed from state with a warning, like the other resources.
+func TestRecordResourceReadWarnsWhenDeleted(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	fake := newFakePDNS(t)
+	fake.addZone("example.test.")
+
+	r := &RecordResource{providerData: &PDNSProviderData{
+		pdnsClient: pdns_client.NewPDNSClient(fake.client, fake.srv.URL, "localhost", fakeAPIKey, pdns_client.WithServerCheck()),
+	}}
+	schemaResp := &fwresource.SchemaResponse{}
+	r.Schema(ctx, fwresource.SchemaRequest{}, schemaResp)
+
+	state := tfsdk.State{Schema: schemaResp.Schema, Raw: tftypes.NewValue(schemaResp.Schema.Type().TerraformType(ctx), nil)}
+	diags := state.Set(ctx, &RecordResourceModel{
+		Zone:     types.StringValue("example.test."),
+		Name:     types.StringValue("www"),
+		Type:     types.StringValue("A"),
+		TTL:      types.Int64Value(60),
+		Records:  types.ListValueMust(types.StringType, []attr.Value{types.StringValue("10.0.0.1")}),
+		Comments: types.ListNull(types.StringType),
+	})
+	if diags.HasError() {
+		t.Fatal(diags)
+	}
+
+	resp := &fwresource.ReadResponse{State: state}
+	r.Read(ctx, fwresource.ReadRequest{State: state}, resp)
+
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("unexpected error: %v", resp.Diagnostics)
+	}
+	if !resp.State.Raw.IsNull() {
+		t.Error("the record was not removed from state")
+	}
+	warnings := resp.Diagnostics.Warnings()
+	if len(warnings) != 1 || warnings[0].Summary() != "Record not found" ||
+		!strings.Contains(warnings[0].Detail(), `The A record "www.example.test." no longer exists`) {
+		t.Errorf("warnings = %v", warnings)
+	}
 }

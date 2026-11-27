@@ -18,7 +18,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/samber/lo"
 	"gitlab.com/joelMuehlena/homelab/code/terraform/provider/terraform-provider-pdns/internal/pdns_client"
 )
@@ -208,7 +207,10 @@ func (r *RecordResource) Read(ctx context.Context, req resource.ReadRequest, res
 
 	if !isFound {
 		// Deleted out of band: drop it from state so that it is re-created.
-		tflog.Warn(ctx, "Record not found, removing it from state", map[string]any{"name": expandedName, "type": data.Type.ValueString()})
+		resp.Diagnostics.AddWarning(
+			"Record not found",
+			fmt.Sprintf("The %s record %q no longer exists on the PowerDNS server and was removed from state. It will be re-created on the next apply.", data.Type.ValueString(), expandedName),
+		)
 		resp.State.RemoveResource(ctx)
 		return
 	}
