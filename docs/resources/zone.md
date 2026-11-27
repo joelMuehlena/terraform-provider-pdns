@@ -92,3 +92,29 @@ Optional:
 - `refresh` (Number) The length of time (in seconds) secondary servers should wait before asking primary servers for the SOA record to see if it has been updated.
 - `retry` (Number) The length of time a server should wait for asking an unresponsive primary nameserver for an update again.
 - `ttl` (Number) TTL of the zone data
+
+## Import
+
+Import is supported using the following syntax:
+
+The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
+
+```shell
+# Zones are imported by their name (with the trailing dot).
+#
+# soa and nameservers are read from the zone's records:
+# - soa from the SOA record. create_record is true, unless the zone has the
+#   default SOA record PowerDNS creates for zones without one; then it is
+#   false, rname is read from it and the other soa values are their defaults.
+# - nameservers from the NS records: first the primary nameserver of the SOA
+#   record, then the others sorted by name (the order PowerDNS returns them in
+#   depends on the backend). Hostnames inside the zone are relative to it ("ns1"), others
+#   fully qualified. A hostname inside the zone gets its address from the A
+#   record at that name, or else the AAAA record.
+#
+# Write names inside the zone relative to it, list the nameservers in the same
+# order and set the address of every nameserver that has one, so the first
+# plan after the import shows no changes. Otherwise that plan updates the zone
+# to the configured values.
+terraform import pdns_zone.example_com example.com.
+```
