@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
@@ -203,6 +204,55 @@ func TestAccZoneResourceTTL(t *testing.T) {
 			},
 		},
 	})
+}
+
+// TestAccZoneResourceSerialNeverDecreases changes zones whose serial is today's
+// last date serial (YYYYMMDD99), ahead of today's date, or no date at all:
+// the serial the provider writes must follow it, not overflow (PowerDNS
+// rejects serials above 32 bits with 422) or go back to today's.
+func TestAccZoneResourceSerialNeverDecreases(t *testing.T) {
+	env := testAccPreCheck(t)
+	today := time.Now().Format("20060102")
+
+	// The serial written out of band; PowerDNS increases it once more
+	// (SOA-EDIT-API), so "98" leaves the zone at today's "99".
+	tests := map[string]string{
+		"last of the day": today + "98",
+		"future date":     "2099010101",
+		"no date":         "4000000000",
+	}
+	for label, written := range tests {
+		t.Run(label, func(t *testing.T) {
+			name := env.zoneName(t, "serial")
+			var serial int64
+			config := func(refresh int) string {
+				return accZoneConfig(env, name, fmt.Sprintf(`
+  nameservers = [{ hostname = "ns1" }]
+  soa         = { rname = "hostmaster", refresh = %d }`, refresh))
+			}
+			resource.ParallelTest(t, resource.TestCase{
+				ProtoV6ProviderFactories: testProviderFactories,
+				CheckDestroy:             env.checkZoneGone(name),
+				Steps: []resource.TestStep{
+					{Config: config(3600)},
+					{
+						PreConfig: func() {
+							env.replaceRRset(t, name, name, "SOA", "ns1."+name+" hostmaster."+name+" "+written+" 3600 7200 4000000 11200")
+						},
+						RefreshState: true,
+						Check:        env.recordSerial(name, &serial),
+					},
+					{
+						Config: config(7200),
+						Check: resource.ComposeAggregateTestCheckFunc(
+							env.checkSerialIncreased(name, &serial),
+							env.checkStateSerial(name),
+						),
+					},
+				},
+			})
+		})
+	}
 }
 
 // checkStateSerial asserts that the serial in state is the one of the zone on
