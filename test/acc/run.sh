@@ -9,7 +9,11 @@
 #   PDNS_BACKEND   gsqlite3 or gpgsql (default gsqlite3), see compose.<backend>.yml
 #   COMPOSE        compose command (default "docker compose"), e.g. "podman compose"
 #   KEEP=1         leave the server running afterwards
-#   PDNS_ACC_PORT, PDNS_ACC_DNS_PORT, PDNS_ACC_API_KEY: see compose.yml
+#   PDNS_ACC_PROJECT  compose project name (default pdns-acc-<version>-<backend>),
+#                  set it to run several servers of one combination at once
+#   PDNS_ACC_PORT, PDNS_ACC_DNS_PORT, PDNS_ACC_API_KEY, PDNS_ACC_SERVER_ARGS:
+#                  see compose.yml, e.g. PDNS_ACC_SERVER_ARGS=--dnsupdate-require-tsig=yes
+#                  (PowerDNS 5.0+) to run the tests against the recommended setting
 #
 # A terraform (or tofu, via TF_ACC_TERRAFORM_PATH) binary must be on PATH.
 set -euo pipefail
@@ -28,9 +32,11 @@ fi
 export PDNS_ACC_API_KEY=${PDNS_ACC_API_KEY:-acc-test-key}
 export PDNS_ACC_PORT=${PDNS_ACC_PORT:-8081}
 export PDNS_ACC_DNS_PORT=${PDNS_ACC_DNS_PORT:-15353}
+export PDNS_ACC_SERVER_ARGS=${PDNS_ACC_SERVER_ARGS:-}
+project=${PDNS_ACC_PROJECT:-pdns-acc-$PDNS_VERSION-$backend}
 
 read -r -a compose <<<"${COMPOSE:-docker compose}"
-compose+=(-p "pdns-acc-$PDNS_VERSION-$backend" -f "$dir/compose.yml" -f "$dir/compose.$backend.yml")
+compose+=(-p "$project" -f "$dir/compose.yml" -f "$dir/compose.$backend.yml")
 
 down() {
   if [[ "${KEEP:-}" != 1 ]]; then

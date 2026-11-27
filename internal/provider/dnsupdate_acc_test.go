@@ -126,6 +126,9 @@ func TestAccZoneDNSUpdateLock(t *testing.T) {
 	}
 	zone := env.zoneName(t, "lock")
 	key := env.keyName(t, "lock")
+	// With dnsupdate-require-tsig a zone without keys refuses unsigned
+	// updates even when unlocked.
+	unlockedAccepts := !env.requireTSIG(t)
 
 	config := func(lock, attached bool) string {
 		c := env.providerConfig() + fmt.Sprintf(`
@@ -183,11 +186,105 @@ resource "pdns_zone_tsig_key" "k" {
 				),
 			},
 			{
-				// Explicit opt-out: unsigned updates are accepted again.
+				// Explicit opt-out: unsigned updates are accepted again (unless
+				// the server requires TSIG).
 				Config: config(false, false),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					env.checkDNSUpdateList(zone),
-					env.checkDNSUpdate(zone, "", "", "u4."+zone, true),
+					env.checkDNSUpdate(zone, "", "", "u4."+zone, unlockedAccepts),
+				),
+			},
+		},
+	})
+}
+
+// requireTSIG reports whether the server runs with dnsupdate-require-tsig=yes
+// (PowerDNS 5.0+; 4.9 does not know the setting).
+func (e *accEnv) requireTSIG(t *testing.T) bool {
+	t.Helper()
+	return e.serverConfig(t)["dnsupdate-require-tsig"] == "yes"
+}
+
+// TestAccDNSUpdateRequireTSIG verifies the behavior of the recommended
+// server setting dnsupdate-require-tsig=yes that the docs describe: a zone
+// without dnsupdate keys refuses unsigned updates and updates signed by any
+// valid key, and once keys are attached only those keys are accepted. It
+// also checks that lock_dnsupdate works alongside it. It only runs against a
+// server started with the setting, e.g.
+//
+//	PDNS_ACC_SERVER_ARGS=--dnsupdate-require-tsig=yes mise run testacc
+func TestAccDNSUpdateRequireTSIG(t *testing.T) {
+	env := testAccPreCheck(t)
+	env.dnsAddr = os.Getenv("PDNS_ACC_DNS_ADDR")
+	if env.dnsAddr == "" {
+		t.Skip("PDNS_ACC_DNS_ADDR is not set")
+	}
+	if !env.requireTSIG(t) {
+		t.Skip("the server does not run with dnsupdate-require-tsig=yes")
+	}
+	zone := env.zoneName(t, "reqtsig")
+	listed, other := env.keyName(t, "listed"), env.keyName(t, "other")
+
+	config := func(lock, attached bool) string {
+		c := env.providerConfig() + fmt.Sprintf(`
+resource "pdns_zone" "z" {
+  name           = %[1]q
+  lock_dnsupdate = %[6]t
+  nameservers    = [{ hostname = "ns1" }]
+  soa            = { rname = "hostmaster" }
+}
+
+resource "pdns_tsig_key" "listed" {
+  name = %[2]q
+  key  = %[4]q
+}
+
+resource "pdns_tsig_key" "other" {
+  name = %[3]q
+  key  = %[5]q
+}
+`, zone, listed, other, secretA, secretB, lock)
+		if attached {
+			c += `
+resource "pdns_zone_tsig_key" "listed" {
+  zone        = pdns_zone.z.name
+  tsig_key_id = pdns_tsig_key.listed.id
+  dnsupdate   = true
+}
+`
+		}
+		return c
+	}
+
+	// Without keys (and unlocked) nothing is accepted.
+	noKeys := resource.ComposeAggregateTestCheckFunc(
+		env.checkDNSUpdate(zone, "", "", "u1."+zone, false),
+		env.checkDNSUpdate(zone, listed, secretA, "l1."+zone, false),
+		env.checkDNSUpdate(zone, other, secretB, "o1."+zone, false),
+	)
+	// Only the listed key is accepted, locked or not.
+	listedOnly := func(step string) resource.TestCheckFunc {
+		return resource.ComposeAggregateTestCheckFunc(
+			env.checkDNSUpdate(zone, "", "", "u"+step+"."+zone, false),
+			env.checkDNSUpdate(zone, listed, secretA, "l"+step+"."+zone, true),
+			env.checkDNSUpdate(zone, other, secretB, "o"+step+"."+zone, false),
+		)
+	}
+
+	resource.ParallelTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		CheckDestroy:             env.checkZoneGone(zone),
+		Steps: []resource.TestStep{
+			{Config: config(false, false), Check: noKeys},
+			{Config: config(false, true), Check: listedOnly("2")},
+			{Config: config(true, true), Check: listedOnly("3")},
+			{
+				// The last key is removed again: nothing is accepted.
+				Config: config(false, false),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					env.checkDNSUpdateList(zone),
+					env.checkDNSUpdate(zone, "", "", "u4."+zone, false),
+					env.checkDNSUpdate(zone, listed, secretA, "l4."+zone, false),
 				),
 			},
 		},
