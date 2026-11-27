@@ -150,6 +150,61 @@ func TestAccZoneResource(t *testing.T) {
 	})
 }
 
+// TestAccZoneResourceTTL verifies that the SOA, NS and glue rrsets are written
+// with the zone's ttl, on create and on updates, and that changing it updates
+// them in place.
+func TestAccZoneResourceTTL(t *testing.T) {
+	env := testAccPreCheck(t)
+	name := env.zoneName(t, "ttl")
+	config := func(ttl, nameservers string) string {
+		return accZoneConfig(env, name, ttl+`
+  nameservers = [`+nameservers+`]
+  soa         = { rname = "hostmaster" }`)
+	}
+	two := `{ hostname = "ns1", address = "10.0.0.1" }, { hostname = "ns2", address = "2001:db8::2" }`
+	soa := "SOA " + name + " ns1." + name + " hostmaster." + name + " SERIAL 86400 7200 4000000 11200"
+	update := resource.ConfigPlanChecks{
+		PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction("pdns_zone.z", plancheck.ResourceActionUpdate)},
+	}
+
+	resource.ParallelTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		CheckDestroy:             env.checkZoneGone(name),
+		Steps: []resource.TestStep{
+			{
+				Config: config("", two),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("pdns_zone.z", "ttl", "3600"),
+					env.checkRRsets(name, soa, "NS "+name+" ns1."+name+",ns2."+name, "A ns1."+name+" 10.0.0.1", "AAAA ns2."+name+" 2001:db8::2"),
+				),
+			},
+			{
+				Config:           config("ttl = 300", two),
+				ConfigPlanChecks: update,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("pdns_zone.z", "ttl", "300"),
+					env.checkRRsetsTTL(name, 300, soa, "NS "+name+" ns1."+name+",ns2."+name, "A ns1."+name+" 10.0.0.1", "AAAA ns2."+name+" 2001:db8::2"),
+				),
+			},
+			{
+				// A nameserver change keeps the TTL.
+				Config:           config("ttl = 300", `{ hostname = "ns1", address = "10.0.0.1" }, { hostname = "ns3", address = "10.0.0.3" }`),
+				ConfigPlanChecks: update,
+				Check:            env.checkRRsetsTTL(name, 300, soa, "NS "+name+" ns1."+name+",ns3."+name, "A ns1."+name+" 10.0.0.1", "A ns3."+name+" 10.0.0.3"),
+			},
+			{
+				// The SOA TTL changed out of band shows as drift.
+				PreConfig: func() {
+					env.replaceRRset(t, name, name, "SOA", "ns1."+name+" hostmaster."+name+" 1 86400 7200 4000000 11200")
+				},
+				Config:           config("ttl = 300", `{ hostname = "ns1", address = "10.0.0.1" }, { hostname = "ns3", address = "10.0.0.3" }`),
+				ConfigPlanChecks: update,
+				Check:            env.checkRRsetsTTL(name, 300, soa, "NS "+name+" ns1."+name+",ns3."+name, "A ns1."+name+" 10.0.0.1", "A ns3."+name+" 10.0.0.3"),
+			},
+		},
+	})
+}
+
 // checkStateSerial asserts that the serial in state is the one of the zone on
 // the server, so the next refresh does not change it.
 func (e *accEnv) checkStateSerial(zoneName string) func(*terraform.State) error {

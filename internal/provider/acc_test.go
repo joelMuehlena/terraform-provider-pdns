@@ -165,8 +165,16 @@ var accSerialRe = regexp.MustCompile(`^(\S+ \S+ )\d+ `)
 
 // checkRRsets asserts all rrsets of a zone on the server as
 // "TYPE name content,..." lines with sorted contents. The SOA serial is
-// replaced by SERIAL.
+// replaced by SERIAL. The SOA, NS and A/AAAA (glue) rrsets must have the
+// default TTL of pdns_zone (see checkRRsetsTTL).
 func (e *accEnv) checkRRsets(zoneName string, want ...string) func(*terraform.State) error {
+	return e.checkRRsetsTTL(zoneName, defaultZoneTTL, want...)
+}
+
+// checkRRsetsTTL is checkRRsets for a zone with the given ttl: the TTL that
+// pdns_zone writes its SOA, NS and glue rrsets with. Every A and AAAA rrset
+// of the zone is taken to be glue.
+func (e *accEnv) checkRRsetsTTL(zoneName string, ttl int64, want ...string) func(*terraform.State) error {
 	return func(*terraform.State) error {
 		zone, err := e.zone(zoneName)
 		if err != nil {
@@ -174,6 +182,9 @@ func (e *accEnv) checkRRsets(zoneName string, want ...string) func(*terraform.St
 		}
 		got := make([]string, 0, len(zone.Rrsets))
 		for _, rr := range zone.Rrsets {
+			if slices.Contains([]string{"SOA", "NS", "A", "AAAA"}, rr.Type) && rr.TTL != ttl {
+				return fmt.Errorf("TTL of %s %s in %s = %d, want %d", rr.Type, rr.Name, zoneName, rr.TTL, ttl)
+			}
 			contents := lo.Map(rr.Records, func(r pdns_client.Record, _ int) string {
 				if rr.Type == "SOA" {
 					return accSerialRe.ReplaceAllString(r.Content, "${1}SERIAL ")

@@ -328,8 +328,8 @@ func TestSOARrset(t *testing.T) {
 	t.Parallel()
 	soa := SOA{RName: "hostmaster", Refresh: 1, Retry: 2, Expire: 3, TTL: 4}
 
-	rrset := soaRrset(soa, "ns1.example.com.", "example.com.", "2024010101")
-	if rrset.Type != "SOA" || rrset.Name != "example.com." || rrset.Changetype != "" {
+	rrset := soaRrset(soa, "ns1.example.com.", "example.com.", "2024010101", 300)
+	if rrset.Type != "SOA" || rrset.Name != "example.com." || rrset.Changetype != "" || rrset.TTL != 300 {
 		t.Errorf("unexpected rrset: %+v", rrset)
 	}
 	if got := rrset.Records[0].Content; got != "ns1.example.com. hostmaster.example.com. 2024010101 1 2 3 4" {
@@ -337,7 +337,7 @@ func TestSOARrset(t *testing.T) {
 	}
 
 	soa.RName = "admin.other.org."
-	if got := soaRrset(soa, "ns1.example.com.", "example.com.", "1").Records[0].Content; !strings.HasPrefix(got, "ns1.example.com. admin.other.org. ") {
+	if got := soaRrset(soa, "ns1.example.com.", "example.com.", "1", 300).Records[0].Content; !strings.HasPrefix(got, "ns1.example.com. admin.other.org. ") {
 		t.Errorf("fully qualified rname must be kept, got %q", got)
 	}
 }
@@ -367,6 +367,7 @@ func TestNameserverRecordChanges(t *testing.T) {
 
 	tests := map[string]struct {
 		planned, current []Nameserver
+		rewriteAll       bool
 		want             []pdns_client.Rrset
 	}{
 		"added and removed": {
@@ -377,8 +378,8 @@ func TestNameserverRecordChanges(t *testing.T) {
 			},
 			current: []Nameserver{{Hostname: "old", Address: new("10.0.0.9")}},
 			want: []pdns_client.Rrset{
-				{Type: "A", Changetype: "REPLACE", Name: "ns1.example.com.", Records: []pdns_client.Record{{Content: "10.0.0.1"}}},
-				{Type: "AAAA", Changetype: "REPLACE", Name: "ns3.example.com.", Records: []pdns_client.Record{{Content: "2001:db8::3"}}},
+				{Type: "A", Changetype: "REPLACE", Name: "ns1.example.com.", TTL: 300, Records: []pdns_client.Record{{Content: "10.0.0.1"}}},
+				{Type: "AAAA", Changetype: "REPLACE", Name: "ns3.example.com.", TTL: 300, Records: []pdns_client.Record{{Content: "2001:db8::3"}}},
 				{Type: "A", Changetype: "DELETE", Name: "old.example.com."},
 			},
 		},
@@ -396,18 +397,27 @@ func TestNameserverRecordChanges(t *testing.T) {
 			planned: []Nameserver{{Hostname: "ns1", Address: new("2001:db8::1")}},
 			current: []Nameserver{{Hostname: "ns1", Address: new("10.0.0.1")}},
 			want: []pdns_client.Rrset{
-				{Type: "AAAA", Changetype: "REPLACE", Name: "ns1.example.com.", Records: []pdns_client.Record{{Content: "2001:db8::1"}}},
+				{Type: "AAAA", Changetype: "REPLACE", Name: "ns1.example.com.", TTL: 300, Records: []pdns_client.Record{{Content: "2001:db8::1"}}},
 				{Type: "A", Changetype: "DELETE", Name: "ns1.example.com."},
 			},
 		},
 		"address changed": {
 			planned: []Nameserver{{Hostname: "ns1", Address: new("10.0.0.2")}},
 			current: []Nameserver{{Hostname: "ns1", Address: new("10.0.0.1")}},
-			want:    []pdns_client.Rrset{{Type: "A", Changetype: "REPLACE", Name: "ns1.example.com.", Records: []pdns_client.Record{{Content: "10.0.0.2"}}}},
+			want:    []pdns_client.Rrset{{Type: "A", Changetype: "REPLACE", Name: "ns1.example.com.", TTL: 300, Records: []pdns_client.Record{{Content: "10.0.0.2"}}}},
+		},
+		"ttl changed": {
+			planned:    []Nameserver{{Hostname: "ns1", Address: new("10.0.0.1")}, {Hostname: "ns2"}, {Hostname: "ns3", Address: new("2001:db8::3")}},
+			current:    []Nameserver{{Hostname: "ns1", Address: new("10.0.0.1")}, {Hostname: "ns2"}, {Hostname: "ns3", Address: new("2001:db8::3")}},
+			rewriteAll: true,
+			want: []pdns_client.Rrset{
+				{Type: "A", Changetype: "REPLACE", Name: "ns1.example.com.", TTL: 300, Records: []pdns_client.Record{{Content: "10.0.0.1"}}},
+				{Type: "AAAA", Changetype: "REPLACE", Name: "ns3.example.com.", TTL: 300, Records: []pdns_client.Record{{Content: "2001:db8::3"}}},
+			},
 		},
 	}
 	for name, tc := range tests {
-		records, diags := nameserverRecordChanges(ctx, tc.planned, tc.current, "example.com.")
+		records, diags := nameserverRecordChanges(ctx, tc.planned, tc.current, "example.com.", 300, tc.rewriteAll)
 		if diags.HasError() {
 			t.Errorf("%s: %v", name, diags)
 			continue
@@ -422,7 +432,7 @@ func TestNameserverRecordChanges(t *testing.T) {
 		"invalid deleted address": {current: []Nameserver{{Hostname: "ns1", Address: new("bad")}}},
 	}
 	for name, tc := range errorCases {
-		if _, diags := nameserverRecordChanges(ctx, tc.planned, tc.current, "example.com."); !diags.HasError() {
+		if _, diags := nameserverRecordChanges(ctx, tc.planned, tc.current, "example.com.", 300, false); !diags.HasError() {
 			t.Errorf("%s: expected error", name)
 		}
 	}
@@ -634,6 +644,7 @@ func zoneModel(t *testing.T, nameservers []Nameserver, soa SOAModel) ZoneResourc
 		Nameservers: nsList,
 		SOA:         soaObj,
 		Masters:     types.ListNull(types.StringType),
+		TTL:         types.Int64Value(300),
 	}
 }
 
@@ -664,17 +675,20 @@ func TestCreateZoneFromData(t *testing.T) {
 	if zone.Name != "example.com." || zone.Kind != "Native" {
 		t.Errorf("unexpected zone: %+v", zone)
 	}
-	if !slices.Equal(zone.Nameservers, []string{"ns1.example.com.", "ns2.other.org.", "ns3.example.com."}) {
-		t.Errorf("nameservers = %v", zone.Nameservers)
+	// The NS records are sent as rrset, with the zone's TTL.
+	if len(zone.Nameservers) != 0 {
+		t.Errorf("nameservers = %v, want them in the NS rrset", zone.Nameservers)
 	}
 
 	got := lo.Map(zone.Rrsets, func(r pdns_client.Rrset, _ int) string {
-		return r.Type + " " + r.Name + " " + r.Records[0].Content
+		contents := lo.Map(r.Records, func(rec pdns_client.Record, _ int) string { return rec.Content })
+		return fmt.Sprintf("%s %s %d %s", r.Type, r.Name, r.TTL, strings.Join(contents, ","))
 	})
 	want := []string{
-		"SOA example.com. ns1.example.com. hostmaster.example.com. " + serial + " 1 2 3 4",
-		"A ns1.example.com. 10.0.0.1",
-		"AAAA ns2.other.org. 2001:db8::2",
+		"SOA example.com. 300 ns1.example.com. hostmaster.example.com. " + serial + " 1 2 3 4",
+		"NS example.com. 300 ns1.example.com.,ns2.other.org.,ns3.example.com.",
+		"A ns1.example.com. 300 10.0.0.1",
+		"AAAA ns2.other.org. 300 2001:db8::2",
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("rrsets =\n%v\nwant\n%v", got, want)
@@ -686,8 +700,8 @@ func TestCreateZoneFromData(t *testing.T) {
 	if diags.HasError() {
 		t.Fatal(diags)
 	}
-	if serial != "" || len(zone.Rrsets) != 0 {
-		t.Errorf("expected no SOA and no serial, got serial %q rrsets %+v", serial, zone.Rrsets)
+	if serial != "" || len(zone.Rrsets) != 1 || zone.Rrsets[0].Type != "NS" {
+		t.Errorf("expected only the NS rrset and no serial, got serial %q rrsets %+v", serial, zone.Rrsets)
 	}
 }
 
