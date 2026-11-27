@@ -35,6 +35,8 @@ var (
 	_ resource.Resource                = &ZoneResource{}
 	_ resource.ResourceWithImportState = &ZoneResource{}
 	_ resource.ResourceWithConfigure   = &ZoneResource{}
+
+	_ resource.ResourceWithValidateConfig = &ZoneResource{}
 )
 
 func NewZoneResource() resource.Resource {
@@ -188,11 +190,13 @@ func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 				Default:  booldefault.StaticBool(false),
 			},
 			"masters": schema.ListAttribute{
-				MarkdownDescription: "Masters of this zone should only be set if kind is Slave",
-				Optional:            true,
-				ElementType:         types.StringType,
-				// FIXME: Add Validator which ensures kind is set to only allowed types e.g. slave
-				Validators: []validator.List{},
+				MarkdownDescription: "The primaries the zone is transferred from, as IP addresses with an optional port " +
+					"(`192.0.2.1`, `2001:db8::1`, `192.0.2.1:5300` or `[2001:db8::1]:5300`). Only valid for `kind = \"Slave\"` " +
+					"or `\"Consumer\"`; such zones are created with their primaries directly, also with `lock_dnsupdate = true` " +
+					"(the temporary `Slave` of a locked create is only used for the other kinds and has no primaries). " +
+					"Changes are applied in place.",
+				Optional:    true,
+				ElementType: types.StringType,
 			},
 			"soa": schema.SingleNestedAttribute{
 				MarkdownDescription: "The Start Of Authority (SOA) record parameters for the zone.",
@@ -236,6 +240,46 @@ func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 			},
 		},
 	}
+}
+
+func (r *ZoneResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var data ZoneResourceModel
+	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	resp.Diagnostics.Append(validateMasters(data)...)
+}
+
+// validateMasters checks that masters is only set for secondary zones and
+// only lists IP addresses with an optional port.
+func validateMasters(data ZoneResourceModel) diag.Diagnostics {
+	var diags diag.Diagnostics
+	if data.Masters.IsNull() || data.Masters.IsUnknown() {
+		return diags
+	}
+
+	kind := data.Kind.ValueString()
+	if data.Kind.IsNull() {
+		kind = "Native"
+	}
+	if !data.Kind.IsUnknown() && !isSecondaryKind(kind) {
+		diags.AddAttributeError(path.Root("masters"), "masters requires a secondary zone",
+			fmt.Sprintf("masters lists the primaries a zone is transferred from and can only be set for zones of kind Slave or Consumer, not %s.", kind))
+	}
+
+	for i, element := range data.Masters.Elements() {
+		primary, ok := element.(types.String)
+		if !ok || primary.IsNull() || primary.IsUnknown() {
+			continue
+		}
+		if _, ok := canonicalPrimary(primary.ValueString()); !ok {
+			diags.AddAttributeError(path.Root("masters").AtListIndex(i), "Invalid primary",
+				fmt.Sprintf("%q is not an IP address with an optional port, such as 192.0.2.1, 2001:db8::1, 192.0.2.1:5300 or [2001:db8::1]:5300.", primary.ValueString()))
+		}
+	}
+	return diags
 }
 
 func (r *ZoneResource) Configure(ctx context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
@@ -323,12 +367,17 @@ func isSecondaryKind(kind string) bool {
 // request already: PowerDNS signs a Slave zone just like any other, and
 // enabling it only with the kind switch fails for zones without a SOA record
 // (create_record = false) because rectifying them fails, while sending the
-// unchanged dnssec = true with the switch is a no-op. If a step after the create fails,
-// the zone is deleted again so it is not left half configured.
+// unchanged dnssec = true with the switch is a no-op. The temporary Slave is
+// created without primaries, so it neither transfers the zone nor forwards
+// updates; any configured masters are only set after the switch. (masters are
+// only valid for Slave and Consumer zones, which are created directly, so this
+// only matters if the kind was unknown when the configuration was validated.)
+// If a step after the create fails, the zone is deleted again so it is not
+// left half configured.
 func (r *ZoneResource) createLocked(ctx context.Context, zone pdns_client.PDNSZone) error {
 	client := r.providerData.pdnsClient
-	kind := zone.Kind
-	zone.Kind = "Slave"
+	kind, masters := zone.Kind, zone.Masters
+	zone.Kind, zone.Masters = "Slave", nil
 
 	if _, err := client.CreateZone(ctx, zone); err != nil {
 		return err
@@ -337,6 +386,9 @@ func (r *ZoneResource) createLocked(ctx context.Context, zone pdns_client.PDNSZo
 	err := r.providerData.setDNSUpdateLock(ctx, zone.Name, true)
 	if err == nil {
 		err = client.UpdateZoneSettings(ctx, zone.Name, kind, zone.Dnssec)
+	}
+	if err == nil && len(masters) > 0 {
+		err = client.UpdateZoneMasters(ctx, zone.Name, masters)
 	}
 	if err != nil {
 		if delErr := client.DeleteZone(ctx, zone.Name); delErr != nil {
@@ -425,6 +477,9 @@ func createZoneFromData(ctx context.Context, data ZoneResourceModel) (pdns_clien
 		}),
 		Rrsets: records,
 	}
+	if diags := data.Masters.ElementsAs(ctx, &newZone.Masters, false); diags.HasError() {
+		return pdns_client.PDNSZone{}, "", append(zoneDiags, diags...)
+	}
 
 	return newZone, lo.Ternary(soa.CreateRecord, serial, ""), nil
 }
@@ -456,6 +511,7 @@ func (r *ZoneResource) Read(ctx context.Context, req resource.ReadRequest, resp 
 	data.Kind = types.StringValue(zone.Kind)
 	data.Name = types.StringValue(zone.Name)
 	data.Serial = types.StringValue(fmt.Sprintf("%d", zone.Serial))
+	data.Masters = mastersValue(zone.Masters, data.Masters)
 
 	soa, diags := readSOA(ctx, zone, data.SOA)
 	resp.Diagnostics.Append(diags...)
@@ -560,20 +616,43 @@ func (r *ZoneResource) Update(ctx context.Context, req resource.UpdateRequest, r
 		plan.Serial = types.StringValue(serial)
 	}
 
+	if handleClientError(&resp.Diagnostics, r.updateSettings(ctx, plan, state)) {
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+}
+
+// updateSettings applies changes of the zone settings: masters, kind, DNSSEC
+// and the dnsupdate lock.
+func (r *ZoneResource) updateSettings(ctx context.Context, plan, state ZoneResourceModel) error {
+	client := r.providerData.pdnsClient
+	name := plan.Name.ValueString()
+
+	// The primaries are set before the kind switch, so a zone that becomes a
+	// Slave transfers from the right servers; a zone that stops being one is
+	// briefly a Slave without primaries, which neither transfers nor applies
+	// updates.
+	if !state.Masters.Equal(plan.Masters) {
+		var masters []string
+		if diags := plan.Masters.ElementsAs(ctx, &masters, false); diags.HasError() {
+			return fmt.Errorf("failed to read masters: %v", diags)
+		}
+		if err := client.UpdateZoneMasters(ctx, name, masters); err != nil {
+			return err
+		}
+	}
+
 	if !state.DNSSec.Equal(plan.DNSSec) || !state.Kind.Equal(plan.Kind) {
-		err := r.providerData.pdnsClient.UpdateZoneSettings(ctx, plan.Name.ValueString(), plan.Kind.ValueString(), plan.DNSSec.ValueBool())
-		if handleClientError(&resp.Diagnostics, err) {
-			return
+		if err := client.UpdateZoneSettings(ctx, name, plan.Kind.ValueString(), plan.DNSSec.ValueBool()); err != nil {
+			return err
 		}
 	}
 
 	if !state.LockDNSUpdate.Equal(plan.LockDNSUpdate) {
-		if handleClientError(&resp.Diagnostics, r.providerData.setDNSUpdateLock(ctx, plan.Name.ValueString(), plan.LockDNSUpdate.ValueBool())) {
-			return
-		}
+		return r.providerData.setDNSUpdateLock(ctx, name, plan.LockDNSUpdate.ValueBool())
 	}
-
-	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
+	return nil
 }
 
 func (r *ZoneResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
@@ -880,6 +959,54 @@ func addressRecordType(address string) (string, bool) {
 		return "A", true
 	}
 	return "AAAA", true
+}
+
+// canonicalPrimary returns a primary ("ip" or "ip:port") in the form PowerDNS
+// stores it: the IP in its canonical form, the port only if it is not 53.
+func canonicalPrimary(primary string) (string, bool) {
+	host, port, err := net.SplitHostPort(primary)
+	if err != nil {
+		host, port = primary, "53"
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return "", false
+	}
+	if n, err := strconv.ParseUint(port, 10, 16); err != nil || n == 0 {
+		return "", false
+	}
+	if port == "53" {
+		return ip.String(), true
+	}
+	return net.JoinHostPort(ip.String(), port), true
+}
+
+// mastersValue returns the primaries of a zone on the server as the masters
+// attribute. It keeps the prior value if it lists the same primaries in
+// another spelling (PowerDNS drops port 53 and lowercases IPv6 addresses),
+// and a null prior value if the zone has no primaries.
+func mastersValue(masters []string, prior types.List) types.List {
+	if len(masters) == 0 && (prior.IsNull() || len(prior.Elements()) == 0) {
+		return prior
+	}
+
+	priorElements := prior.Elements()
+	same := len(priorElements) == len(masters)
+	elements := make([]attr.Value, 0, len(masters))
+	for i, primary := range masters {
+		elements = append(elements, types.StringValue(primary))
+		if !same {
+			continue
+		}
+		p, ok := priorElements[i].(types.String)
+		canonical, valid := canonicalPrimary(p.ValueString())
+		server, _ := canonicalPrimary(primary)
+		same = ok && valid && canonical == server
+	}
+	if same {
+		return prior
+	}
+	return types.ListValueMust(types.StringType, elements)
 }
 
 // nameserverRecordChanges builds the A/AAAA (glue) rrset changes from the

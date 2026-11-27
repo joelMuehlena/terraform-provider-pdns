@@ -187,6 +187,65 @@ func TestAccZoneResourceCreateWithDNSSEC(t *testing.T) {
 	}
 }
 
+func (e *accEnv) checkMasters(zoneName, kind string, want ...string) func(*terraform.State) error {
+	return func(*terraform.State) error {
+		zone, err := e.zone(zoneName)
+		if err != nil {
+			return err
+		}
+		if zone.Kind != kind || strings.Join(zone.Masters, ",") != strings.Join(want, ",") {
+			return fmt.Errorf("zone %s kind=%s masters=%v, want kind=%s masters=%v", zoneName, zone.Kind, zone.Masters, kind, want)
+		}
+		return nil
+	}
+}
+
+func TestAccZoneResourceMasters(t *testing.T) {
+	env := testAccPreCheck(t)
+	name := env.zoneName(t, "masters")
+	config := func(body string) string {
+		return accZoneConfig(env, name, body+`
+  nameservers = [{ hostname = "ns1" }]
+  soa         = { rname = "hostmaster" }`)
+	}
+	update := resource.ConfigPlanChecks{
+		PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction("pdns_zone.z", plancheck.ResourceActionUpdate)},
+	}
+
+	resource.ParallelTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		CheckDestroy:             env.checkZoneGone(name),
+		Steps: []resource.TestStep{
+			{
+				// PowerDNS drops port 53 and lowercases IPv6 addresses; that
+				// is no drift.
+				Config: config(`
+  kind           = "Slave"
+  lock_dnsupdate = true
+  masters        = ["192.0.2.1:53", "2001:DB8::1", "[2001:db8::2]:5300"]`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("pdns_zone.z", "masters.#", "3"),
+					env.checkMasters(name, "Slave", "192.0.2.1", "2001:db8::1", "[2001:db8::2]:5300"),
+				),
+			},
+			{
+				Config:           config(`kind = "Slave"` + "\n" + `lock_dnsupdate = true` + "\n" + `masters = ["192.0.2.9"]`),
+				ConfigPlanChecks: update,
+				Check:            env.checkMasters(name, "Slave", "192.0.2.9"),
+			},
+			{
+				// No longer a secondary: the primaries are removed.
+				Config:           config(`lock_dnsupdate = true`),
+				ConfigPlanChecks: update,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckNoResourceAttr("pdns_zone.z", "masters"),
+					env.checkMasters(name, "Native"),
+				),
+			},
+		},
+	})
+}
+
 func TestAccZoneResourceWithoutSOARecord(t *testing.T) {
 	env := testAccPreCheck(t)
 	name := env.zoneName(t, "nosoa")
