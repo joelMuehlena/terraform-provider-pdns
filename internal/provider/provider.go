@@ -37,9 +37,9 @@ type PDNSProviderData struct {
 
 // patchRecords changes rrsets of a zone. PATCH requests to the same zone are
 // serialized: the gpgsql backend fails concurrent PATCHes of one zone with
-// HTTP 500 ("deadlock detected"), which Terraform's parallel record changes
-// otherwise trigger. The client additionally retries that error, for writers
-// in other processes.
+// database deadlocks (HTTP 500 or 422), which Terraform's parallel record
+// changes otherwise trigger. The client additionally retries those errors, for
+// writers in other processes.
 func (d *PDNSProviderData) patchRecords(ctx context.Context, zone string, rrsets []pdns_client.Rrset) error {
 	unlock := d.lockZone(zone)
 	defer unlock()

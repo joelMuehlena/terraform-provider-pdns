@@ -1,5 +1,7 @@
 package pdns_client
 
+import "fmt"
+
 type PDNSZoneNotFoundError struct {
 	ZoneID string
 }
@@ -32,4 +34,15 @@ type PDNSServerNotFoundError struct {
 func (e *PDNSServerNotFoundError) Error() string {
 	return "server_id \"" + e.ServerID + "\" not found at endpoint " + e.Endpoint +
 		" (GET /api/v1/servers/" + e.ServerID + " returned 404); check the provider's endpoint and server_id"
+}
+
+// statusError is a response with an unexpected status code that has no
+// dedicated error type. Error() includes the response body.
+type statusError struct {
+	StatusCode int
+	Body       string
+}
+
+func (e *statusError) Error() string {
+	return fmt.Sprintf("unexpected status code %d: %s", e.StatusCode, e.Body)
 }

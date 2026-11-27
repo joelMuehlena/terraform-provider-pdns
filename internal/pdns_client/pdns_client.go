@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -205,7 +206,7 @@ func (client *PDNSClient) do(ctx context.Context, method, apiPath string, notFou
 		return nil, notFound
 	default:
 		data, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("unexpected status code %d: %s", resp.StatusCode, data)
+		return nil, &statusError{StatusCode: resp.StatusCode, Body: string(data)}
 	}
 }
 
@@ -315,9 +316,57 @@ func (client *PDNSClient) UpdateZoneMasters(ctx context.Context, zoneID string, 
 // failed because of a database deadlock.
 const patchDeadlockRetries = 4
 
+// isPatchDeadlock reports whether a failed rrset PATCH looks like a gpgsql
+// deadlock between concurrent PATCHes of the same zone. PowerDNS reports one
+// in several ways:
+//
+//   - the PostgreSQL message "deadlock detected" in the body, with HTTP 500
+//     (deleting or inserting records) or 422 ("Failed to rectify ...");
+//   - a bare HTTP 500 "Internal Server Error": 4.9 and 5.0 never include the
+//     backend message in a 500, and 5.1 only when the request has a JSON
+//     Content-Type, which this client does not send. The pdns log then shows
+//     the deadlock;
+//   - HTTP 422 "Failed to rectify ..." with a GSQLBackend message (5.1), also
+//     when the PostgreSQL message is localized.
+//
+// A bare 500 is also what 4.9 and 5.0 answer for other database errors, such
+// as a value too long for its column. Retrying those is harmless (REPLACE and
+// DELETE are idempotent) and only delays the error. Validation errors are a
+// 422 with a different message and are not retried.
+func isPatchDeadlock(err error) bool {
+	se, ok := errors.AsType[*statusError](err)
+	if !ok {
+		return false
+	}
+	body := strings.TrimSpace(se.Body)
+	switch {
+	case strings.Contains(body, "deadlock detected"):
+		return true
+	case se.StatusCode == http.StatusInternalServerError:
+		return isGenericInternalServerError(body)
+	case se.StatusCode == http.StatusUnprocessableEntity:
+		return strings.Contains(body, "Failed to rectify") && strings.Contains(body, "GSQLBackend")
+	}
+	return false
+}
+
+// isGenericInternalServerError reports whether body is PowerDNS's generic 500
+// body without details, as plain text or as a JSON error object.
+func isGenericInternalServerError(body string) bool {
+	const generic = "Internal Server Error"
+	if body == generic {
+		return true
+	}
+	var e struct {
+		Error string `json:"error"`
+	}
+	return json.Unmarshal([]byte(body), &e) == nil && e.Error == generic
+}
+
 // UpdateZoneRecords applies rrset changes to a zone. The gpgsql backend fails
-// concurrent PATCHes of the same zone with HTTP 500 "deadlock detected";
-// REPLACE and DELETE are idempotent, so such a PATCH is retried with backoff.
+// concurrent PATCHes of the same zone with database deadlocks (see
+// isPatchDeadlock); REPLACE and DELETE are idempotent, so such a PATCH is
+// retried with backoff.
 func (client *PDNSClient) UpdateZoneRecords(ctx context.Context, zoneID string, rrsets []Rrset) error {
 	data, err := json.Marshal(PDNSZone{Rrsets: rrsets})
 	if err != nil {
@@ -330,7 +379,7 @@ func (client *PDNSClient) UpdateZoneRecords(ctx context.Context, zoneID string, 
 			_ = resp.Body.Close()
 			return nil
 		}
-		if attempt >= patchDeadlockRetries || !strings.Contains(err.Error(), "deadlock detected") {
+		if attempt >= patchDeadlockRetries || !isPatchDeadlock(err) {
 			return err
 		}
 		tflog.Debug(ctx, "Retrying rrset PATCH after a database deadlock", map[string]any{"zone": zoneID, "attempt": attempt + 1})
