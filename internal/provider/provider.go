@@ -80,9 +80,10 @@ func (p *PDNSProvider) Schema(ctx context.Context, req provider.SchemaRequest, r
 	resp.Schema = schema.Schema{
 		Attributes: map[string]schema.Attribute{
 			"endpoint": schema.StringAttribute{
-				MarkdownDescription: "API Endpoint of the the PowerDNS Auth API-Server",
-				Optional:            false,
-				Required:            true,
+				MarkdownDescription: "API Endpoint of the the PowerDNS Auth API-Server: its base URL, without `/api/v1` (a trailing slash is ignored). " +
+					"Before the first request the provider checks that `server_id` exists there and fails otherwise.",
+				Optional: false,
+				Required: true,
 			},
 			"server_id": schema.StringAttribute{
 				MarkdownDescription: "Server id. If unset defaults to `localhost`. See [PowerDNS API docs](https://doc.powerdns.com/authoritative/http-api/server.html) for mor info",
@@ -187,6 +188,10 @@ func (p *PDNSProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 			data.Endpoint.ValueString(),
 			data.ServerID.ValueString(),
 			data.APIKey.ValueString(),
+			// A wrong endpoint or server_id makes PowerDNS answer 404 like for
+			// a deleted zone; the check turns that into an error instead of
+			// emptying the state.
+			pdns_client.WithServerCheck(),
 		),
 	}
 }
