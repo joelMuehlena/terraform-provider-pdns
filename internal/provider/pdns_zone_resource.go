@@ -519,8 +519,6 @@ func (r *ZoneResource) Update(ctx context.Context, req resource.UpdateRequest, r
 
 		addedOrChanged, deleted := Diff(newNameservers, currentNameservers)
 
-		tflog.Info(ctx, "DBG", map[string]any{"added": addedOrChanged, "del": deleted})
-
 		nsRecords, diags := nameserverRecordChanges(ctx, addedOrChanged, deleted, plan.Name.ValueString())
 		resp.Diagnostics.Append(diags...)
 		if resp.Diagnostics.HasError() {
