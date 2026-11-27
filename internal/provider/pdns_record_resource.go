@@ -169,11 +169,7 @@ func (r *RecordResource) Create(ctx context.Context, req resource.CreateRequest,
 				Disabled: false,
 			}
 		}),
-		Comments: lo.Map(comments, func(item string, index int) pdns_client.Comment {
-			return pdns_client.Comment{
-				Content: item,
-			}
-		}),
+		Comments: recordComments(comments),
 	}})
 	if handleClientError(&resp.Diagnostics, err) {
 		return
@@ -229,7 +225,11 @@ func (r *RecordResource) Read(ctx context.Context, req resource.ReadRequest, res
 	}
 
 	if len(listValue.Elements()) == 0 {
-		data.Comments = types.ListNull(types.StringType)
+		// No comments: keep an empty list from the configuration (comments =
+		// []) as is, so that it does not differ from null forever.
+		if data.Comments.IsUnknown() || len(data.Comments.Elements()) > 0 {
+			data.Comments = types.ListNull(types.StringType)
+		}
 	} else {
 		data.Comments = listValue
 	}
@@ -295,11 +295,7 @@ func (r *RecordResource) Update(ctx context.Context, req resource.UpdateRequest,
 				Disabled: false,
 			}
 		}),
-		Comments: lo.Map(comments, func(item string, index int) pdns_client.Comment {
-			return pdns_client.Comment{
-				Content: item,
-			}
-		}),
+		Comments: recordComments(comments),
 	}})
 	if handleClientError(&resp.Diagnostics, err) {
 		return
@@ -327,6 +323,18 @@ func (r *RecordResource) Delete(ctx context.Context, req resource.DeleteRequest,
 		return
 	}
 	handleClientError(&resp.Diagnostics, err)
+}
+
+// recordComments returns the comments to send with a REPLACE of the rrset. It
+// is never nil: the client omits nil comments, and PowerDNS then keeps the
+// comments on the server, so removing comments from the configuration would
+// never take effect.
+func recordComments(comments []string) []pdns_client.Comment {
+	out := make([]pdns_client.Comment, 0, len(comments))
+	for _, c := range comments {
+		out = append(out, pdns_client.Comment{Content: c})
+	}
+	return out
 }
 
 // ImportState imports a record by an id of the form <zone>:<name>:<type>.

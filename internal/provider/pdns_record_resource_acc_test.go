@@ -129,6 +129,69 @@ func TestAccRecordResource(t *testing.T) {
 	})
 }
 
+// TestAccRecordResourceRemoveComments checks that removing the comments of a
+// record removes them on the server: PowerDNS keeps the comments of an rrset
+// when a REPLACE carries no comments key.
+func TestAccRecordResourceRemoveComments(t *testing.T) {
+	env := testAccPreCheck(t)
+	zone := env.createZone(t, "comments")
+	www := "www." + zone
+
+	resource.ParallelTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		CheckDestroy:             env.checkRRset(zone, www, "A", 0, nil, nil),
+		Steps: []resource.TestStep{
+			{
+				Config: accRecordConfig(env, zone, `
+  type     = "A"
+  records  = ["10.0.0.1"]
+  comments = ["one", "two"]`),
+				Check: env.checkRRset(zone, www, "A", 1800, []string{"10.0.0.1"}, []string{"one", "two"}),
+			},
+			{
+				PreConfig: func() {
+					// The premise: a REPLACE without comments keeps them.
+					err := env.client.UpdateZoneRecords(context.Background(), zone, []pdns_client.Rrset{{
+						Name: www, Type: "A", Changetype: "REPLACE", TTL: 1800,
+						Records: []pdns_client.Record{{Content: "10.0.0.1"}},
+					}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := env.checkRRset(zone, www, "A", 1800, []string{"10.0.0.1"}, []string{"one", "two"})(nil); err != nil {
+						t.Fatal(err)
+					}
+				},
+				Config: accRecordConfig(env, zone, `
+  type    = "A"
+  records = ["10.0.0.1"]`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction("pdns_record.r", plancheck.ResourceActionUpdate)},
+				},
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckNoResourceAttr("pdns_record.r", "comments"),
+					env.checkRRset(zone, www, "A", 1800, []string{"10.0.0.1"}, []string{}),
+				),
+			},
+			{
+				Config: accRecordConfig(env, zone, `
+  type     = "A"
+  records  = ["10.0.0.1"]
+  comments = ["one"]`),
+				Check: env.checkRRset(zone, www, "A", 1800, []string{"10.0.0.1"}, []string{"one"}),
+			},
+			{
+				// An explicitly empty list removes them too, without a diff.
+				Config: accRecordConfig(env, zone, `
+  type     = "A"
+  records  = ["10.0.0.1"]
+  comments = []`),
+				Check: env.checkRRset(zone, www, "A", 1800, []string{"10.0.0.1"}, []string{}),
+			},
+		},
+	})
+}
+
 func TestAccRecordResourceFullyQualifiedName(t *testing.T) {
 	env := testAccPreCheck(t)
 	zone := env.createZone(t, "fqdn")

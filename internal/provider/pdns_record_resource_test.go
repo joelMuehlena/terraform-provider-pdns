@@ -131,6 +131,79 @@ func TestRecordResource(t *testing.T) {
 	})
 }
 
+// TestRecordResourceRemoveComments checks that removing the comments of a
+// record removes them on the server. PowerDNS keeps the comments of an rrset
+// when a REPLACE carries none, so the provider must send an empty list.
+func TestRecordResourceRemoveComments(t *testing.T) {
+	t.Parallel()
+	fake := newFakePDNS(t)
+	fake.addZone("example.test.")
+	www := "www.example.test."
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: recordConfig(fake, `
+  type     = "A"
+  records  = ["10.0.0.1"]
+  comments = ["one", "two"]`),
+				Check: checkFakeRRset(fake, www, "A", 1800, []string{"10.0.0.1"}, []string{"one", "two"}),
+			},
+			{
+				Config: recordConfig(fake, `
+  type    = "A"
+  records = ["10.0.0.1"]`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction("pdns_record.r", plancheck.ResourceActionUpdate)},
+				},
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckNoResourceAttr("pdns_record.r", "comments"),
+					checkFakeRRset(fake, www, "A", 1800, []string{"10.0.0.1"}, nil),
+				),
+			},
+			{
+				// Comments added out of band are removed again.
+				PreConfig: func() {
+					fake.mutate(func(f *fakePDNS) {
+						z := f.zones["example.test"]
+						for i := range z.rrsets {
+							if z.rrsets[i].Type == "A" {
+								z.rrsets[i].Comments = []pdns_client.Comment{{Content: "out of band"}}
+							}
+						}
+					})
+				},
+				Config: recordConfig(fake, `
+  type    = "A"
+  records = ["10.0.0.1"]`),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction("pdns_record.r", plancheck.ResourceActionUpdate)},
+				},
+				Check: checkFakeRRset(fake, www, "A", 1800, []string{"10.0.0.1"}, nil),
+			},
+			{
+				// An explicitly empty list is the same and does not diff.
+				Config: recordConfig(fake, `
+  type     = "A"
+  records  = ["10.0.0.1"]
+  comments = ["one"]`),
+				Check: checkFakeRRset(fake, www, "A", 1800, []string{"10.0.0.1"}, []string{"one"}),
+			},
+			{
+				Config: recordConfig(fake, `
+  type     = "A"
+  records  = ["10.0.0.1"]
+  comments = []`),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("pdns_record.r", "comments.#", "0"),
+					checkFakeRRset(fake, www, "A", 1800, []string{"10.0.0.1"}, nil),
+				),
+			},
+		},
+	})
+}
+
 func TestRecordResourceFullyQualifiedName(t *testing.T) {
 	t.Parallel()
 	fake := newFakePDNS(t)
