@@ -26,10 +26,8 @@ func (d *PDNSProviderData) hasDNSUpdateLock(ctx context.Context, zone string) (b
 // stale read (e.g. another run removing the last attachment) cannot silently
 // drop the placeholder.
 func (d *PDNSProviderData) setDNSUpdateLock(ctx context.Context, zone string, lock bool) error {
-	unlock := d.lockZone(zone)
-	defer unlock()
-
 	return retryWrites(ctx, d.lockRetry(), "TSIG-ALLOW-DNSUPDATE of zone "+zone,
+		func() func() { return d.lockZone(zone) },
 		func(ctx context.Context) (bool, error) {
 			locked, err := d.hasDNSUpdateLock(ctx, zone)
 			return locked == lock, err

@@ -204,9 +204,6 @@ func (r *ZoneTSIGKeyResource) Create(ctx context.Context, req resource.CreateReq
 		return
 	}
 
-	unlock := r.providerData.lockZone(zone)
-	defer unlock()
-
 	if handleClientError(&resp.Diagnostics, r.apply(ctx, zone, keyID, key.Name, plan.purposes())) {
 		return
 	}
@@ -276,9 +273,6 @@ func (r *ZoneTSIGKeyResource) Update(ctx context.Context, req resource.UpdateReq
 		return
 	}
 
-	unlock := r.providerData.lockZone(zone)
-	defer unlock()
-
 	if handleClientError(&resp.Diagnostics, r.apply(ctx, zone, keyID, key.Name, plan.purposes())) {
 		return
 	}
@@ -300,9 +294,6 @@ func (r *ZoneTSIGKeyResource) Delete(ctx context.Context, req resource.DeleteReq
 	if handleClientError(&resp.Diagnostics, err) {
 		return
 	}
-
-	unlock := r.providerData.lockZone(zone)
-	defer unlock()
 
 	err = r.apply(ctx, zone, keyID, keyName, tsigPurposes{})
 	if isNotFound(err) {
@@ -389,11 +380,12 @@ func (r *ZoneTSIGKeyResource) retry() applyRetry {
 	return defaultApplyRetry
 }
 
-// apply brings the zone's TSIG lists in line with want for the given key.
-// Callers must hold the zone lock to serialize writers within this process.
+// apply brings the zone's TSIG lists in line with want for the given key. It
+// takes the zone lock itself (see retryWrites).
 func (r *ZoneTSIGKeyResource) apply(ctx context.Context, zone, keyID, keyName string, want tsigPurposes) error {
 	var current tsigPurposes
 	return retryWrites(ctx, r.retry(), "TSIG key lists of zone "+zone,
+		func() func() { return r.providerData.lockZone(zone) },
 		func(ctx context.Context) (bool, error) {
 			state, err := r.load(ctx, zone)
 			if err != nil {
@@ -414,7 +406,24 @@ func (r *ZoneTSIGKeyResource) apply(ctx context.Context, zone, keyID, keyName st
 // state is checked again and the write retried (with backoff) if another
 // writer interfered. Once it matches, it is re-checked after a settle delay to
 // catch writes still in flight.
-func retryWrites(ctx context.Context, retry applyRetry, what string, check func(context.Context) (bool, error), write func(context.Context) error) error {
+//
+// lock serializes the writers of this process: it is held while checking and
+// writing, but released during the backoff and settle delays, so writers of
+// other resources on the same zone need not wait for them. That is safe
+// because every check and write runs under the lock and re-reads the server,
+// so another writer of this process that runs while we sleep starts from the
+// state we wrote and only adds or removes its own entry. The delays exist to
+// catch writers in other processes, which the lock never covered.
+func retryWrites(ctx context.Context, retry applyRetry, what string, lock func() func(), check func(context.Context) (bool, error), write func(context.Context) error) error {
+	unlock := lock()
+	defer func() { unlock() }()
+	sleep := func(d time.Duration) error {
+		unlock()
+		err := sleepCtx(ctx, d)
+		unlock = lock()
+		return err
+	}
+
 	writes := 0
 	settled := false
 
@@ -429,7 +438,7 @@ func retryWrites(ctx context.Context, retry applyRetry, what string, check func(
 				return nil
 			}
 			settled = true
-			if err := sleepCtx(ctx, retry.settle); err != nil {
+			if err := sleep(retry.settle); err != nil {
 				return err
 			}
 			continue
@@ -439,7 +448,7 @@ func retryWrites(ctx context.Context, retry applyRetry, what string, check func(
 			return fmt.Errorf("%s were modified concurrently; gave up after %d attempts", what, writes)
 		}
 		if writes > 0 {
-			if err := sleepCtx(ctx, retry.backoff(writes)); err != nil {
+			if err := sleep(retry.backoff(writes)); err != nil {
 				return err
 			}
 		}
