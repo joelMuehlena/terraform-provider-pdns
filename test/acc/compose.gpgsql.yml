@@ -3,14 +3,14 @@
 services:
   # Copies the schema out of the pdns image for the postgres init scripts.
   schema:
-    image: docker.io/powerdns/pdns-auth-${PDNS_VERSION:-51}:${PDNS_TAG:-latest}
+    image: ${PDNS_IMAGE:?PDNS_IMAGE is not set, see run.sh}
     user: root
     entrypoint: ["cp", "/usr/local/share/doc/pdns/schema.pgsql.sql", "/schema/"]
     volumes:
       - schema:/schema
 
   postgres:
-    image: docker.io/library/postgres:17-alpine
+    image: ${POSTGRES_IMAGE:?POSTGRES_IMAGE is not set, see run.sh}
     environment:
       POSTGRES_USER: pdns
       POSTGRES_PASSWORD: pdns

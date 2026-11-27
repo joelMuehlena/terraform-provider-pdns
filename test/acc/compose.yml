@@ -1,13 +1,16 @@
 # PowerDNS Authoritative server for the acceptance tests.
 #
-# Combine with exactly one backend override file:
+# Combine with exactly one backend override file. run.sh sets the images
+# from images/*.Dockerfile:
 #
-#   docker compose -f compose.yml -f compose.gsqlite3.yml up -d --wait
-#   docker compose -f compose.yml -f compose.gpgsql.yml up -d --wait
+#   PDNS_IMAGE=docker.io/powerdns/pdns-auth-51:5.1.7 \
+#     docker compose -f compose.yml -f compose.gsqlite3.yml up -d --wait
+#   PDNS_IMAGE=... POSTGRES_IMAGE=docker.io/library/postgres:17.12-alpine \
+#     docker compose -f compose.yml -f compose.gpgsql.yml up -d --wait
 #
 # Environment:
-#   PDNS_VERSION      series of the powerdns/pdns-auth-XY image: 49, 50 or 51 (default 51)
-#   PDNS_TAG          image tag (default latest)
+#   PDNS_IMAGE        pdns-auth image (required)
+#   POSTGRES_IMAGE    postgres image of the gpgsql backend (required there)
 #   PDNS_ACC_API_KEY  API key (default acc-test-key)
 #   PDNS_ACC_PORT     host port of the HTTP API (default 8081)
 #   PDNS_ACC_DNS_PORT host port of the DNS listener, tcp and udp (default 15353,
@@ -20,7 +23,7 @@
 # rootless podman, which cannot bind ports below 1024.
 services:
   pdns:
-    image: docker.io/powerdns/pdns-auth-${PDNS_VERSION:-51}:${PDNS_TAG:-latest}
+    image: ${PDNS_IMAGE:?PDNS_IMAGE is not set, see run.sh}
     # Appended to the pdns_server command line by the image's entrypoint.
     command: ${PDNS_ACC_SERVER_ARGS:-}
     environment:

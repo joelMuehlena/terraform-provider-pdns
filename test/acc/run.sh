@@ -6,6 +6,8 @@
 #
 # Environment:
 #   PDNS_VERSION   pdns-auth series: 49, 50 or 51 (also 4.9, 5.0, 5.1; default 51)
+#   PDNS_IMAGE     pdns-auth image, default from images/pdns-auth-<series>.Dockerfile
+#   POSTGRES_IMAGE postgres image (gpgsql), default from images/postgres.Dockerfile
 #   PDNS_BACKEND   gsqlite3 or gpgsql (default gsqlite3), see compose.<backend>.yml
 #   COMPOSE        compose command (default "docker compose"), e.g. "podman compose"
 #   KEEP=1         leave the server running afterwards
@@ -16,6 +18,10 @@
 #                  (PowerDNS 5.0+) to run the tests against the recommended setting
 #
 # A terraform (or tofu, via TF_ACC_TERRAFORM_PATH) binary must be on PATH.
+#
+# The images are pinned to exact versions in images/*.Dockerfile, which
+# Dependabot keeps up to date (they are never built). To bump one by hand,
+# edit its FROM line.
 set -euo pipefail
 
 dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -28,6 +34,26 @@ if [[ ! -f "$dir/compose.$backend.yml" ]]; then
   echo "unknown PDNS_BACKEND '$backend' (no $dir/compose.$backend.yml)" >&2
   exit 2
 fi
+
+# image_of prints the image of the FROM line of images/<name>.Dockerfile.
+image_of() {
+  local file=$dir/images/$1.Dockerfile image
+  if [[ ! -f "$file" ]]; then
+    echo "no image pinned for '$1' (no $file)" >&2
+    exit 2
+  fi
+  image=$(sed -n 's/^FROM[[:space:]]*//p' "$file")
+  if [[ -z "$image" ]]; then
+    echo "no FROM line in $file" >&2
+    exit 2
+  fi
+  echo "$image"
+}
+# Plain assignments, so that set -e sees a failing image_of.
+PDNS_IMAGE=${PDNS_IMAGE:-$(image_of "pdns-auth-$PDNS_VERSION")}
+POSTGRES_IMAGE=${POSTGRES_IMAGE:-$(image_of postgres)}
+export PDNS_IMAGE POSTGRES_IMAGE
+echo "pdns image: $PDNS_IMAGE" >&2
 
 export PDNS_ACC_API_KEY=${PDNS_ACC_API_KEY:-acc-test-key}
 export PDNS_ACC_PORT=${PDNS_ACC_PORT:-8081}
