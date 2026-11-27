@@ -244,6 +244,37 @@ func TestSOAModelFromRecord(t *testing.T) {
 	}
 }
 
+func TestDNSNameValidator(t *testing.T) {
+	t.Parallel()
+	tests := map[string]bool{ // name -> valid
+		"ns1":               true,
+		"a.b":               true,
+		"ns1.example.com.":  true,
+		"example.com.":      true,
+		"ns-1_x":            true,
+		"":                  false,
+		"@":                 false,
+		".":                 false,
+		".ns1":              false,
+		"ns1..example.com.": false,
+		"ns 1":              false,
+	}
+	for name, valid := range tests {
+		resp := &validator.StringResponse{}
+		dnsNameValidator{}.ValidateString(context.Background(), validator.StringRequest{Path: path.Root("hostname"), ConfigValue: types.StringValue(name)}, resp)
+		if resp.Diagnostics.HasError() == valid {
+			t.Errorf("%q: error = %v, want valid = %v", name, resp.Diagnostics, valid)
+		}
+	}
+	for _, v := range []types.String{types.StringNull(), types.StringUnknown()} {
+		resp := &validator.StringResponse{}
+		dnsNameValidator{}.ValidateString(context.Background(), validator.StringRequest{Path: path.Root("hostname"), ConfigValue: v}, resp)
+		if resp.Diagnostics.HasError() {
+			t.Errorf("%s: unexpected error %v", v, resp.Diagnostics)
+		}
+	}
+}
+
 func TestRelativeName(t *testing.T) {
 	t.Parallel()
 	tests := []struct{ name, zone, want string }{

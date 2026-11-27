@@ -151,7 +151,10 @@ func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 					Attributes: map[string]schema.Attribute{
 						"hostname": schema.StringAttribute{
 							Required:    true,
-							Description: "The hostname of the nameservers. Will be suffixed with the zone name if not ending with an explicit '.'",
+							Description: "The hostname of the nameservers. Will be suffixed with the zone name if not ending with an explicit '.'. Use the fully qualified name (e.g. \"example.com.\") for the zone apex; \"@\" and empty names are rejected.",
+							Validators: []validator.String{
+								dnsNameValidator{},
+							},
 						},
 						"address": schema.StringAttribute{
 							Optional:    true,
@@ -213,7 +216,10 @@ func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 					},
 					"rname": schema.StringAttribute{
 						Required:    true,
-						Description: "The RName of the SOA record. Represents the administrator's email address. It will be suffixed with the zone name unless ending with an explicit '.'",
+						Description: "The RName of the SOA record. Represents the administrator's email address. It will be suffixed with the zone name unless ending with an explicit '.'. \"@\" and empty names are rejected.",
+						Validators: []validator.String{
+							dnsNameValidator{},
+						},
 					},
 					"refresh": schema.Int64Attribute{
 						Description: "The length of time (in seconds) secondary servers should wait before asking primary servers for the SOA record to see if it has been updated.",
