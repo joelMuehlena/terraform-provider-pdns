@@ -248,6 +248,21 @@ func TestZoneWrites(t *testing.T) {
 			wantBody:   `{"rrsets":[{"name":"www.example.com.","type":"A","changetype":"REPLACE","records":[{"content":"10.0.0.1"}],"comments":[{"content":"hi","account":""}],"ttl":60}]}`,
 		},
 		{
+			name:   "update records removing comments",
+			status: http.StatusNoContent,
+			call: func(c *PDNSClient) error {
+				return c.UpdateZoneRecords(context.Background(), "example.com.", []Rrset{{
+					Name: "www.example.com.", Type: "A", Changetype: "REPLACE", TTL: 60,
+					Records:  []Record{{Content: "10.0.0.1"}},
+					Comments: []Comment{},
+				}})
+			},
+			wantMethod: http.MethodPatch,
+			wantPath:   "/api/v1/servers/localhost/zones/example.com.",
+			wantBody:   `{"rrsets":[{"name":"www.example.com.","type":"A","changetype":"REPLACE","records":[{"content":"10.0.0.1"}],"comments":[],"ttl":60}]}`,
+		},
+		{
+			// nil comments are omitted, so PowerDNS keeps the existing ones.
 			name:   "update records",
 			status: http.StatusNoContent,
 			call: func(c *PDNSClient) error {

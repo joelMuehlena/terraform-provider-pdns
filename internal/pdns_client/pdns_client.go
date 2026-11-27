@@ -127,12 +127,15 @@ type PDNSZone struct {
 }
 
 type Rrset struct {
-	Name       string    `json:"name,omitempty"`
-	Type       string    `json:"type,omitempty"`
-	Changetype string    `json:"changetype,omitempty"`
-	Records    []Record  `json:"records,omitempty"`
-	Comments   []Comment `json:"comments,omitempty"`
-	TTL        int64     `json:"ttl"`
+	Name       string   `json:"name,omitempty"`
+	Type       string   `json:"type,omitempty"`
+	Changetype string   `json:"changetype,omitempty"`
+	Records    []Record `json:"records,omitempty"`
+	// Comments is omitted when nil, which makes a REPLACE keep the comments
+	// already on the server. A non-nil empty slice is sent as [] and removes
+	// them.
+	Comments []Comment `json:"comments,omitzero"`
+	TTL      int64     `json:"ttl"`
 }
 
 type Comment struct {

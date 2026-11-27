@@ -295,6 +295,10 @@ func (f *fakePDNS) patchZone(w http.ResponseWriter, r *http.Request, zone *fakeZ
 
 	for _, change := range in.Rrsets {
 		change = fakeStoreRrset(change)
+		if old, ok := zone.rrset(change.Name, change.Type); ok && change.Comments == nil {
+			// Like PowerDNS, a REPLACE without comments keeps them.
+			change.Comments = old.Comments
+		}
 		zone.rrsets = slices.DeleteFunc(zone.rrsets, func(rr pdns_client.Rrset) bool {
 			return rr.Name == change.Name && rr.Type == change.Type
 		})
