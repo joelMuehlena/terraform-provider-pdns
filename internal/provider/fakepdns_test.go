@@ -195,6 +195,9 @@ func (f *fakePDNS) createZone(w http.ResponseWriter, r *http.Request) bool {
 		writeError(w, http.StatusConflict, "Conflict")
 		return false
 	}
+	if rejectOutOfZone(w, in.Name, in.Rrsets) {
+		return false
+	}
 
 	zone := &fakeZone{name: in.Name, kind: in.Kind, dnssec: in.Dnssec, metadata: map[string][]string{}}
 	zone.rrsets = append(zone.rrsets, in.Rrsets...)
@@ -270,6 +273,9 @@ func (f *fakePDNS) patchZone(w http.ResponseWriter, r *http.Request, zone *fakeZ
 	var in pdns_client.PDNSZone
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return false
+	}
+	if rejectOutOfZone(w, zone.name, in.Rrsets) {
 		return false
 	}
 
@@ -500,4 +506,16 @@ func (z *fakeZone) updateMasters(in map[string]json.RawMessage) {
 		_ = json.Unmarshal(raw, &masters)
 		z.setMasters(masters)
 	}
+}
+
+// rejectOutOfZone fails the request with 422, like PowerDNS, if an rrset is
+// not inside the zone, and reports whether it did.
+func rejectOutOfZone(w http.ResponseWriter, zoneName string, rrsets []pdns_client.Rrset) bool {
+	for _, rr := range rrsets {
+		if !inZone(rr.Name, zoneName) {
+			writeError(w, http.StatusUnprocessableEntity, "RRset "+rr.Name+" IN "+rr.Type+": Name is out of zone")
+			return true
+		}
+	}
+	return false
 }

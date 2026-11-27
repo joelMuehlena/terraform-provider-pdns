@@ -541,14 +541,15 @@ func TestZoneResourceErrors(t *testing.T) {
 	})
 
 	validation := map[string]struct{ body, wantErr string }{
-		"name without dot":  {`nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = { rname = "h" }`, `Name must end with a dot`},
-		"no nameservers":    {`nameservers = []` + "\n" + `soa = { rname = "h" }`, `at least 1`},
-		"invalid address":   {`nameservers = [{ hostname = "ns1", address = "nope" }]` + "\n" + `soa = { rname = "h" }`, `not a valid IPv4 or\s+valid IPv6`},
-		"invalid kind":      {`kind = "Bogus"` + "\n" + `nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = { rname = "h" }`, `Invalid Attribute Value Match`},
-		"missing soa":       {`nameservers = [{ hostname = "ns1" }]`, `"soa" is required`},
-		"missing soa rname": {`nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = {}`, `rname`},
-		"masters on Native": {`masters = ["192.0.2.1"]` + "\n" + `nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = { rname = "h" }`, `masters requires a secondary zone`},
-		"invalid primary":   {`kind = "Slave"` + "\n" + `masters = ["primary.example.org"]` + "\n" + `nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = { rname = "h" }`, `Invalid primary`},
+		"name without dot":    {`nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = { rname = "h" }`, `Name must end with a dot`},
+		"no nameservers":      {`nameservers = []` + "\n" + `soa = { rname = "h" }`, `at least 1`},
+		"invalid address":     {`nameservers = [{ hostname = "ns1", address = "nope" }]` + "\n" + `soa = { rname = "h" }`, `not a valid IPv4 or\s+valid IPv6`},
+		"invalid kind":        {`kind = "Bogus"` + "\n" + `nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = { rname = "h" }`, `Invalid Attribute Value Match`},
+		"missing soa":         {`nameservers = [{ hostname = "ns1" }]`, `"soa" is required`},
+		"missing soa rname":   {`nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = {}`, `rname`},
+		"masters on Native":   {`masters = ["192.0.2.1"]` + "\n" + `nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = { rname = "h" }`, `masters requires a secondary zone`},
+		"out-of-zone address": {`nameservers = [{ hostname = "ns1" }, { hostname = "ns2.other.org.", address = "10.0.0.2" }]` + "\n" + `soa = { rname = "h" }`, `ns2.other.org. is not inside the zone\s+example.test.`},
+		"invalid primary":     {`kind = "Slave"` + "\n" + `masters = ["primary.example.org"]` + "\n" + `nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = { rname = "h" }`, `Invalid primary`},
 	}
 	for name, tt := range validation {
 		t.Run(name, func(t *testing.T) {

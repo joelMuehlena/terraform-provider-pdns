@@ -155,7 +155,7 @@ func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 						},
 						"address": schema.StringAttribute{
 							Optional:    true,
-							Description: "The IP Address of the nameserver. The provider manages it as the A (IPv4) or AAAA (IPv6) record at the hostname, holding exactly this address. If that record is changed, extended or removed outside of Terraform, the next plan shows the difference and the apply restores it.",
+							Description: "The IP Address of the nameserver. The provider manages it as the A (IPv4) or AAAA (IPv6) glue record at the hostname, holding exactly this address, so it can only be set for nameservers inside the zone. If that record is changed, extended or removed outside of Terraform, the next plan shows the difference and the apply restores it.",
 							Validators: []validator.String{
 								stringvalidator.RegexMatches(IP_REGEX, "The passed string is not a valid IPv4 or valid IPv6 Address"),
 							},
@@ -250,6 +250,41 @@ func (r *ZoneResource) ValidateConfig(ctx context.Context, req resource.Validate
 	}
 
 	resp.Diagnostics.Append(validateMasters(data)...)
+	resp.Diagnostics.Append(validateNameserverAddresses(data)...)
+}
+
+// validateNameserverAddresses rejects addresses of nameservers outside the
+// zone: their glue A/AAAA record would be out of zone, which PowerDNS refuses.
+func validateNameserverAddresses(data ZoneResourceModel) diag.Diagnostics {
+	var diags diag.Diagnostics
+	if data.Name.IsNull() || data.Name.IsUnknown() {
+		return diags
+	}
+	zone := data.Name.ValueString()
+
+	for i, element := range data.Nameservers.Elements() {
+		nameserver, ok := element.(types.Object)
+		if !ok || nameserver.IsNull() || nameserver.IsUnknown() {
+			continue
+		}
+		hostname, _ := nameserver.Attributes()["hostname"].(types.String)
+		address, _ := nameserver.Attributes()["address"].(types.String)
+		if hostname.IsNull() || hostname.IsUnknown() || address.IsNull() || address.IsUnknown() {
+			continue
+		}
+		if host := fqdn(hostname.ValueString(), zone); !inZone(host, zone) {
+			diags.AddAttributeError(path.Root("nameservers").AtListIndex(i).AtName("address"), "Nameserver address outside the zone",
+				fmt.Sprintf("The nameserver %s is not inside the zone %s, so the zone cannot hold its A/AAAA (glue) record and PowerDNS "+
+					"rejects it as out of zone. Remove address and manage the record in the zone that contains %s.", host, zone, host))
+		}
+	}
+	return diags
+}
+
+// inZone reports whether the fully qualified name is the zone apex or below it.
+func inZone(name, zone string) bool {
+	name, zone = strings.ToLower(name), strings.ToLower(zone)
+	return name == zone || strings.HasSuffix(name, "."+zone)
 }
 
 // validateMasters checks that masters is only set for secondary zones and
