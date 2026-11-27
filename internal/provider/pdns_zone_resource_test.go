@@ -1301,3 +1301,34 @@ func TestZoneNameValue(t *testing.T) {
 		}
 	}
 }
+
+func TestZoneResourceNameserverRespelled(t *testing.T) {
+	t.Parallel()
+	fake := newFakePDNS(t)
+	config := func(ns1, ns2 string) string {
+		return zoneConfig(fake, `
+  nameservers = [
+    { hostname = "`+ns1+`", address = "10.0.0.1" },
+    { hostname = "`+ns2+`", address = "2001:db8::2" },
+  ]
+  soa = { rname = "hostmaster" }`)
+	}
+	glue := func(primary string) resource.TestCheckFunc {
+		return checkRRsets(fake, "example.test.",
+			"SOA example.test. "+primary+" hostmaster.example.test. SERIAL 86400 7200 4000000 11200",
+			"A ns1.example.test. 10.0.0.1",
+			"AAAA ns2.example.test. 2001:db8::2",
+		)
+	}
+
+	// Respelling a hostname with the same address keeps its glue record.
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: config("ns1", "ns2"), Check: glue("ns1.example.test.")},
+			{Config: config("ns1.example.test.", "NS2"), Check: glue("ns1.example.test.")},
+			{Config: config("NS1", "ns2.Example.Test."), Check: glue("NS1.example.test.")},
+			{Config: config("ns1", "ns2"), Check: glue("ns1.example.test.")},
+		},
+	})
+}

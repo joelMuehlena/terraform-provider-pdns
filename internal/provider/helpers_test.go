@@ -206,7 +206,7 @@ func TestDiff(t *testing.T) {
 		{Hostname: "ns4", Address: new("10.0.0.4")}, // added
 	}
 
-	addedOrChanged, deleted := Diff(planned, current)
+	addedOrChanged, deleted := Diff(planned, current, "example.com.")
 	if got := hostnames(addedOrChanged); !slices.Equal(got, []string{"ns2", "ns4"}) {
 		t.Errorf("addedOrChanged = %v, want [ns2 ns4]", got)
 	}
@@ -214,7 +214,7 @@ func TestDiff(t *testing.T) {
 		t.Errorf("deleted = %v, want none", hostnames(deleted))
 	}
 
-	addedOrChanged, deleted = Diff(current[:1], current)
+	addedOrChanged, deleted = Diff(current[:1], current, "example.com.")
 	if len(addedOrChanged) != 0 {
 		t.Errorf("addedOrChanged = %v, want none", hostnames(addedOrChanged))
 	}
@@ -223,9 +223,43 @@ func TestDiff(t *testing.T) {
 	}
 
 	// Removing an address is a change.
-	addedOrChanged, _ = Diff([]Nameserver{{Hostname: "ns1"}}, current[:1])
+	addedOrChanged, _ = Diff([]Nameserver{{Hostname: "ns1"}}, current[:1], "example.com.")
 	if got := hostnames(addedOrChanged); !slices.Equal(got, []string{"ns1"}) {
 		t.Errorf("addedOrChanged = %v, want [ns1]", got)
+	}
+
+	// Respelling a hostname is no change.
+	addedOrChanged, deleted = Diff([]Nameserver{
+		{Hostname: "ns1.example.com.", Address: new("10.0.0.1")},
+		{Hostname: "NS2", Address: new("10.0.0.2")},
+		{Hostname: "Ns3.Example.Com."},
+	}, current, "example.com.")
+	if len(addedOrChanged) != 0 || len(deleted) != 0 {
+		t.Errorf("respelled: addedOrChanged = %v, deleted = %v, want none", hostnames(addedOrChanged), hostnames(deleted))
+	}
+
+	// The zone name is compared case-insensitively too.
+	addedOrChanged, deleted = Diff([]Nameserver{{Hostname: "ns1.EXAMPLE.com.", Address: new("10.0.0.1")}}, current[:1], "Example.Com.")
+	if len(addedOrChanged) != 0 || len(deleted) != 0 {
+		t.Errorf("zone case: addedOrChanged = %v, deleted = %v, want none", hostnames(addedOrChanged), hostnames(deleted))
+	}
+}
+
+func TestWithoutReplacedDeletes(t *testing.T) {
+	t.Parallel()
+	got := withoutReplacedDeletes([]pdns_client.Rrset{
+		{Type: "A", Changetype: "REPLACE", Name: "ns1.example.com."},
+		{Type: "A", Changetype: "DELETE", Name: "NS1.example.com."},
+		{Type: "AAAA", Changetype: "DELETE", Name: "ns1.example.com."},
+		{Type: "A", Changetype: "DELETE", Name: "ns2.example.com."},
+	})
+	want := []pdns_client.Rrset{
+		{Type: "A", Changetype: "REPLACE", Name: "ns1.example.com."},
+		{Type: "AAAA", Changetype: "DELETE", Name: "ns1.example.com."},
+		{Type: "A", Changetype: "DELETE", Name: "ns2.example.com."},
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("withoutReplacedDeletes =\n%+v\nwant\n%+v", got, want)
 	}
 }
 
@@ -460,6 +494,28 @@ func TestNameserverRecordChanges(t *testing.T) {
 			planned: []Nameserver{{Hostname: "ns1", Address: new("10.0.0.2")}},
 			current: []Nameserver{{Hostname: "ns1", Address: new("10.0.0.1")}},
 			want:    []pdns_client.Rrset{{Type: "A", Changetype: "REPLACE", Name: "ns1.example.com.", TTL: 300, Records: []pdns_client.Record{{Content: "10.0.0.2"}}}},
+		},
+		"hostname respelled": {
+			planned: []Nameserver{
+				{Hostname: "ns1.example.com.", Address: new("10.0.0.1")},
+				{Hostname: "NS2", Address: new("2001:db8::2")},
+			},
+			current: []Nameserver{
+				{Hostname: "ns1", Address: new("10.0.0.1")},
+				{Hostname: "ns2", Address: new("2001:db8::2")},
+			},
+			want: []pdns_client.Rrset{},
+		},
+		"hostname respelled, address changed": {
+			planned: []Nameserver{{Hostname: "NS1", Address: new("10.0.0.2")}},
+			current: []Nameserver{{Hostname: "ns1.example.com.", Address: new("10.0.0.1")}},
+			want:    []pdns_client.Rrset{{Type: "A", Changetype: "REPLACE", Name: "NS1.example.com.", TTL: 300, Records: []pdns_client.Record{{Content: "10.0.0.2"}}}},
+		},
+		"hostname respelled, ttl changed": {
+			planned:    []Nameserver{{Hostname: "NS1", Address: new("10.0.0.1")}},
+			current:    []Nameserver{{Hostname: "ns1", Address: new("10.0.0.1")}},
+			rewriteAll: true,
+			want:       []pdns_client.Rrset{{Type: "A", Changetype: "REPLACE", Name: "NS1.example.com.", TTL: 300, Records: []pdns_client.Record{{Content: "10.0.0.1"}}}},
 		},
 		"ttl changed": {
 			planned:    []Nameserver{{Hostname: "ns1", Address: new("10.0.0.1")}, {Hostname: "ns2"}, {Hostname: "ns3", Address: new("2001:db8::3")}},

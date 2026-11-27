@@ -1170,11 +1170,11 @@ func mastersValue(masters []string, prior types.List) types.List {
 // nameserver is written.
 func nameserverRecordChanges(ctx context.Context, planned, current []Nameserver, zoneName string, ttl int64, rewriteAll bool) ([]pdns_client.Rrset, diag.Diagnostics) {
 	var diags diag.Diagnostics
-	addedOrChanged, deleted := Diff(planned, current)
+	addedOrChanged, deleted := Diff(planned, current, zoneName)
 	if rewriteAll {
 		addedOrChanged = planned
 	}
-	previous := lo.KeyBy(current, func(ns Nameserver) string { return ns.Hostname })
+	previous := lo.KeyBy(current, func(ns Nameserver) string { return nameserverKey(ns.Hostname, zoneName) })
 	records := make([]pdns_client.Rrset, 0, len(addedOrChanged)+len(deleted))
 
 	for i, nameserver := range addedOrChanged {
@@ -1204,7 +1204,7 @@ func nameserverRecordChanges(ctx context.Context, planned, current []Nameserver,
 
 		// The glue of the previous address is orphaned unless it was just
 		// replaced by a record of the same type.
-		if prev, ok := previous[nameserver.Hostname]; ok && prev.Address != nil {
+		if prev, ok := previous[nameserverKey(nameserver.Hostname, zoneName)]; ok && prev.Address != nil {
 			if prevType, ok := addressRecordType(*prev.Address); ok && prevType != recordType {
 				records = append(records, pdns_client.Rrset{
 					Type:       prevType,
@@ -1234,5 +1234,22 @@ func nameserverRecordChanges(ctx context.Context, planned, current []Nameserver,
 		})
 	}
 
-	return records, diags
+	return withoutReplacedDeletes(records), diags
+}
+
+// withoutReplacedDeletes drops the DELETE changes of rrsets that are also
+// replaced in the same changes (names compared like DNS), so a PATCH never
+// deletes a glue record it writes, e.g. for a nameserver whose hostname is
+// respelled while another spelling of it is removed.
+func withoutReplacedDeletes(records []pdns_client.Rrset) []pdns_client.Rrset {
+	key := func(rr pdns_client.Rrset) string { return asciiLowerString(rr.Name) + " " + strings.ToUpper(rr.Type) }
+	replaced := map[string]bool{}
+	for _, rr := range records {
+		if rr.Changetype == "REPLACE" {
+			replaced[key(rr)] = true
+		}
+	}
+	return slices.DeleteFunc(records, func(rr pdns_client.Rrset) bool {
+		return rr.Changetype == "DELETE" && replaced[key(rr)]
+	})
 }
