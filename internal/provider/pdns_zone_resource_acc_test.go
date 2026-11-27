@@ -613,6 +613,40 @@ func TestAccZoneResourceUppercaseName(t *testing.T) {
 	})
 }
 
+// TestAccZoneResourceNameserverRespelled verifies that respelling the hostname
+// of a nameserver with an address (relative, fully qualified, other case)
+// keeps its glue record.
+func TestAccZoneResourceNameserverRespelled(t *testing.T) {
+	env := testAccPreCheck(t)
+	name := env.zoneName(t, "respell")
+	config := func(ns1, ns2 string) string {
+		return accZoneConfig(env, name, `
+  nameservers = [
+    { hostname = "`+ns1+`", address = "10.0.0.1" },
+    { hostname = "`+ns2+`", address = "2001:db8::2" },
+  ]
+  soa = { rname = "hostmaster" }`)
+	}
+	check := func(primary, ns1, ns2 string) resource.TestCheckFunc {
+		return env.checkRRsets(name,
+			"SOA "+name+" "+primary+" hostmaster."+name+" SERIAL 86400 7200 4000000 11200",
+			"NS "+name+" "+ns1+","+ns2,
+			"A ns1."+name+" 10.0.0.1",
+			"AAAA ns2."+name+" 2001:db8::2",
+		)
+	}
+
+	resource.ParallelTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		CheckDestroy:             env.checkZoneGone(name),
+		Steps: []resource.TestStep{
+			{Config: config("ns1", "ns2"), Check: check("ns1."+name, "ns1."+name, "ns2."+name)},
+			{Config: config("ns1."+name, "NS2"), Check: check("ns1."+name, "NS2."+name, "ns1."+name)},
+			{Config: config("NS1", "ns2"), Check: check("NS1."+name, "NS1."+name, "ns2."+name)},
+		},
+	})
+}
+
 func TestAccZoneResourceDrift(t *testing.T) {
 	env := testAccPreCheck(t)
 	name := env.zoneName(t, "drift")
