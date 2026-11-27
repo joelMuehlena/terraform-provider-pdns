@@ -575,6 +575,44 @@ func TestAccZoneResourceImportExisting(t *testing.T) {
 	})
 }
 
+// TestAccZoneResourceUppercaseName verifies that a zone name with uppercase
+// letters, which PowerDNS returns lowercased, keeps its spelling: no diff and
+// no replacement after the apply, and an import by that spelling matches.
+func TestAccZoneResourceUppercaseName(t *testing.T) {
+	env := testAccPreCheck(t)
+	name := env.zoneName(t, "Upper.Case")
+	config := accZoneConfig(env, name, `
+  nameservers = [{ hostname = "NS1", address = "10.0.0.1" }]
+  soa         = { rname = "hostmaster" }`)
+	lower := strings.ToLower(name)
+
+	resource.ParallelTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		CheckDestroy:             env.checkZoneGone(lower),
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("pdns_zone.z", "name", name),
+					env.checkRRsets(lower,
+						// PowerDNS lowercases the owner names, not the contents.
+						"SOA "+lower+" NS1."+name+" hostmaster."+name+" SERIAL 86400 7200 4000000 11200",
+						"NS "+lower+" NS1."+name,
+						"A ns1."+lower+" 10.0.0.1",
+					),
+				),
+			},
+			{
+				Config: config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+			},
+			accImportStep(config, name),
+		},
+	})
+}
+
 func TestAccZoneResourceDrift(t *testing.T) {
 	env := testAccPreCheck(t)
 	name := env.zoneName(t, "drift")
