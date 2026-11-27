@@ -130,7 +130,7 @@ func TestAccZoneTSIGKeyResource(t *testing.T) {
 				// Many keys per zone and many zones per key in one apply.
 				Config: s.config(),
 				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("pdns_zone_tsig_key.all.0", "id", z1+"/"+abc[0]+"."),
+					resource.TestCheckResourceAttr("pdns_zone_tsig_key.all.0", "id", z1+":"+abc[0]+"."),
 					resource.TestCheckResourceAttr("pdns_zone_tsig_key.d", "dnsupdate", "false"),
 					s.checkLists(z1, abc, abc, s.keys[3:]),
 					s.checkLists(z2, abc, abc, nil),
@@ -154,7 +154,7 @@ func TestAccZoneTSIGKeyResource(t *testing.T) {
 			{
 				ResourceName:      "pdns_zone_tsig_key.d",
 				ImportState:       true,
-				ImportStateId:     z1 + "/" + s.keys[3] + ".",
+				ImportStateId:     z1 + ":" + s.keys[3] + ".",
 				ImportStateVerify: true,
 			},
 		},

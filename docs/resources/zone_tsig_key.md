@@ -68,7 +68,7 @@ resource "pdns_zone_tsig_key" "tenant_b_example_com" {
 
 ### Read-Only
 
-- `id` (String) Identifier of the attachment in the form `<zone>/<tsig_key_id>`.
+- `id` (String) Identifier of the attachment in the form `<zone>:<tsig_key_id>`.
 
 ## Import
 
@@ -77,6 +77,7 @@ Import is supported using the following syntax:
 The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
 
 ```shell
-# Attachments are imported by `<zone>/<tsig_key_id>`.
-terraform import pdns_zone_tsig_key.tenant_a_example_com example.com./tenant-a.
+# Attachments are imported by `<zone>:<tsig_key_id>` (":" because "/" is valid
+# in RFC 2317 classless reverse zones such as `0/26.2.0.192.in-addr.arpa.`).
+terraform import pdns_zone_tsig_key.tenant_a_example_com example.com.:tenant-a.
 ```
