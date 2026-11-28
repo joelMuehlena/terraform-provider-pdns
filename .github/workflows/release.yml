@@ -53,8 +53,8 @@ jobs:
           subject-checksums: dist/terraform-provider-pdns_${{ fromJSON(steps.goreleaser.outputs.metadata).version }}_SHA256SUMS
 
   # Publishes the release archives as an OpenTofu OCI provider mirror artifact,
-  # ghcr.io/<owner>/terraform-provider-pdns:<version> (see README, "Installing
-  # from an OCI registry"). It uses the assets of the GitHub release, so the
+  # ghcr.io/<owner>/terraform-provider-pdns:<version> (see
+  # docs/guides/oci.md). It uses the assets of the GitHub release, so the
   # registry serves the very zips (and checksums) the release does. The pushed
   # index is signed keyless with cosign and gets a GitHub build provenance
   # attestation, both by digest and both attached to it in the registry.
