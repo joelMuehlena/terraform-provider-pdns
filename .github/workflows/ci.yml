@@ -262,6 +262,62 @@ jobs:
           fi
           go test -race -count=1 -cover ./...
 
+  # The full-stack example end to end (examples/full-stack/run.sh), with the
+  # provider built from this change. It is installed from a filesystem
+  # mirror rather than with dev_overrides, which `tofu init` does not skip.
+  example:
+    name: example (${{ matrix.cli }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cli: [terraform, tofu]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: "go.mod"
+          cache: true
+      - if: matrix.cli == 'terraform'
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: "1.17.*"
+          terraform_wrapper: false
+      - if: matrix.cli == 'tofu'
+        uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: "1.13.*"
+          tofu_wrapper: false
+      - name: Install the provider into a filesystem mirror
+        run: |
+          mirror=$RUNNER_TEMP/mirror
+          platform=$(go env GOOS)_$(go env GOARCH)
+          # Any version that satisfies the constraint in examples/full-stack.
+          for host in registry.terraform.io registry.opentofu.org; do
+            go build -o "$mirror/$host/joelmuehlena/pdns/0.4.0/$platform/terraform-provider-pdns_v0.4.0" .
+          done
+          cat > "$RUNNER_TEMP/mirror.tfrc" <<EOF
+          provider_installation {
+            filesystem_mirror {
+              path    = "$mirror"
+              include = ["registry.terraform.io/joelmuehlena/pdns", "registry.opentofu.org/joelmuehlena/pdns"]
+            }
+            direct {
+              exclude = ["registry.terraform.io/joelmuehlena/pdns", "registry.opentofu.org/joelmuehlena/pdns"]
+            }
+          }
+          EOF
+          echo "TF_CLI_CONFIG_FILE=$RUNNER_TEMP/mirror.tfrc" >> "$GITHUB_ENV"
+      - name: Install dig and nsupdate
+        run: |
+          if ! command -v dig >/dev/null || ! command -v nsupdate >/dev/null; then
+            sudo apt-get update -q && sudo apt-get install -yq bind9-dnsutils
+          fi
+      - name: Run the example
+        env:
+          TF: ${{ matrix.cli }}
+        run: examples/full-stack/run.sh
+
   acceptance:
     name: acceptance (pdns ${{ matrix.pdns }}, ${{ matrix.backend }}${{ matrix.server_args && format(', {0}', matrix.server_args) || '' }}${{ matrix.cli == 'tofu' && ', tofu' || '' }})
     runs-on: ubuntu-latest
