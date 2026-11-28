@@ -10,21 +10,23 @@ import (
 )
 
 // TestRequestHeaders checks that every request, with or without a body,
-// carries the API key and JSON Content-Type and Accept headers. PowerDNS
-// only includes the cause of an error in the response when the request has
-// a JSON Content-Type.
+// carries the API key, the User-Agent and JSON Content-Type and Accept
+// headers. PowerDNS only includes the cause of an error in the response when
+// the request has a JSON Content-Type.
+const testUserAgent = "terraform-provider-pdns/1.2.3 (commit 0123456789ab) terraform/1.17.2"
+
 func TestRequestHeaders(t *testing.T) {
 	t.Parallel()
 
 	type seen struct {
-		method, path, contentType, accept, apiKey string
+		method, path, contentType, accept, apiKey, userAgent string
 	}
 	var mu sync.Mutex
 	var requests []seen
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.ReadAll(r.Body)
 		mu.Lock()
-		requests = append(requests, seen{r.Method, r.URL.Path, r.Header.Get("Content-Type"), r.Header.Get("Accept"), r.Header.Get("X-API-Key")})
+		requests = append(requests, seen{r.Method, r.URL.Path, r.Header.Get("Content-Type"), r.Header.Get("Accept"), r.Header.Get("X-API-Key"), r.Header.Get("User-Agent")})
 		mu.Unlock()
 		// The status each call expects, so that no call fails.
 		switch {
@@ -38,7 +40,7 @@ func TestRequestHeaders(t *testing.T) {
 		_, _ = io.WriteString(w, `{}`)
 	}))
 	t.Cleanup(srv.Close)
-	client := NewPDNSClient(srv.Client(), srv.URL, "localhost", testAPIKey, WithServerCheck())
+	client := NewPDNSClient(srv.Client(), srv.URL, "localhost", testAPIKey, WithServerCheck(), WithUserAgent(testUserAgent))
 	ctx := context.Background()
 
 	calls := map[string]func() error{
@@ -71,6 +73,9 @@ func TestRequestHeaders(t *testing.T) {
 		if r.accept != "application/json" {
 			t.Errorf("%s %s: Accept = %q, want application/json", r.method, r.path, r.accept)
 		}
+		if r.userAgent != testUserAgent {
+			t.Errorf("%s %s: User-Agent = %q, want %q", r.method, r.path, r.userAgent, testUserAgent)
+		}
 		if r.apiKey != testAPIKey {
 			t.Errorf("%s %s: X-API-Key = %q, want %q", r.method, r.path, r.apiKey, testAPIKey)
 		}
@@ -83,5 +88,24 @@ func TestRequestHeaders(t *testing.T) {
 		if !methods[m] {
 			t.Errorf("no %s request was checked", m)
 		}
+	}
+}
+
+// TestDefaultUserAgent checks that without WithUserAgent the client sends
+// the default User-Agent of net/http.
+func TestDefaultUserAgent(t *testing.T) {
+	t.Parallel()
+	userAgents := make(chan string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		userAgents <- r.Header.Get("User-Agent")
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	t.Cleanup(srv.Close)
+	client := NewPDNSClient(srv.Client(), srv.URL, "localhost", testAPIKey)
+	if _, err := client.GetZone(context.Background(), "z.", false, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-userAgents; got != "Go-http-client/1.1" {
+		t.Errorf("User-Agent = %q, want the net/http default", got)
 	}
 }

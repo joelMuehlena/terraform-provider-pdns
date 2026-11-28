@@ -22,6 +22,9 @@ type PDNSClient struct {
 	serverID   string
 	apiKey     string
 	endpoint   string
+	// userAgent is the User-Agent header of every request, see
+	// WithUserAgent. Empty means the default of net/http.
+	userAgent string
 
 	// checkServer makes the first request verify that serverID exists at
 	// endpoint, see WithServerCheck. serverMu guards serverChecked.
@@ -46,6 +49,12 @@ type Option func(*PDNSClient)
 // check is remembered; a failed one is repeated on the next request.
 func WithServerCheck() Option {
 	return func(c *PDNSClient) { c.checkServer = true }
+}
+
+// WithUserAgent sets the User-Agent header of every request, so that the
+// PowerDNS (or proxy) logs identify the client.
+func WithUserAgent(userAgent string) Option {
+	return func(c *PDNSClient) { c.userAgent = userAgent }
 }
 
 // NewPDNSClient returns a client for the PowerDNS API at endpoint (the base
@@ -171,6 +180,9 @@ func (client *PDNSClient) newRequest(ctx context.Context, method, rawURL string,
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("X-API-Key", client.apiKey)
+	if client.userAgent != "" {
+		req.Header.Set("User-Agent", client.userAgent)
+	}
 	return req, nil
 }
 

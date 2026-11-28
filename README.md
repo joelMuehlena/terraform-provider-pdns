@@ -97,6 +97,13 @@ Release builds carry the version and commit of the release. Binaries built with
 information Go embeds: the module version if known (else `dev`), the git commit and
 `-dirty` for a working tree with uncommitted changes.
 
+Requests to PowerDNS carry the build and the CLI version in their `User-Agent`, e.g.
+`terraform-provider-pdns/1.2.3 (commit 0123456789ab) terraform/1.17.2` (with OpenTofu
+the OpenTofu version), so that a reverse proxy in front of PowerDNS, or PowerDNS itself
+with `webserver-loglevel=detailed` and `loglevel=6`, logs which client sent a request.
+`detailed` also logs every request header including `X-API-Key`, so only enable it
+for debugging.
+
 ## Resources
 
 | Resource        | Description                                                                                   |
