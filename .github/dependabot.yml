@@ -46,9 +46,13 @@ updates:
       include: scope
 
   # Images of the acceptance tests, pinned in test/acc/images/*.Dockerfile
-  # (Dependabot does not follow the variables in the compose files).
+  # (Dependabot does not follow the variables in the compose files), and the
+  # registry of the CI OCI dry run, pinned in test/oci/registry.Dockerfile
+  # (Dependabot does not follow images in workflow run: steps).
   - package-ecosystem: docker
-    directory: /test/acc/images
+    directories:
+      - /test/acc/images
+      - /test/oci
     schedule:
       interval: weekly
     labels:

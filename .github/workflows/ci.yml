@@ -122,10 +122,17 @@ jobs:
           openssl x509 -req -in registry.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
             -days 1 -extfile registry.ext -out registry.pem
           chmod a+r registry.key
+          # Pinned (tag and digest) in the FROM line of the Dockerfile, which
+          # Dependabot keeps up to date; it is not built.
+          image=$(sed -n 's/^FROM[[:space:]]*//p' "$GITHUB_WORKSPACE/test/oci/registry.Dockerfile")
+          if [ -z "$image" ]; then
+            echo "::error::No FROM line in test/oci/registry.Dockerfile."
+            exit 1
+          fi
           docker run -d --name oci-registry -p 127.0.0.1:5000:5000 -v "$CERTS:/certs:ro" \
             -e REGISTRY_HTTP_TLS_CERTIFICATE=/certs/registry.pem \
             -e REGISTRY_HTTP_TLS_KEY=/certs/registry.key \
-            docker.io/library/registry:3.1.2@sha256:82f6ff4a7f982960c8aa51617fea3aabc485df6e55cce80d22deb1de36f1bc3c
+            "$image"
           for _ in $(seq 30); do
             curl -sf --cacert ca.pem https://127.0.0.1:5000/v2/ >/dev/null && exit 0
             sleep 1
@@ -145,6 +152,8 @@ jobs:
           VERSION: ${{ steps.publish.outputs.version }}
         run: |
           epoch=$(git log -1 --format=%ct)
+          revision=$(git rev-parse HEAD)
+          export OCI_REVISION=$revision
           # Later than the first push, so a creation time taken from the
           # clock would change the digest.
           sleep 2
@@ -161,6 +170,13 @@ jobs:
           fi
           if [ "${other#*@}" = "${REF#*@}" ]; then
             echo "::error::Another SOURCE_DATE_EPOCH gave the same digest."
+            exit 1
+          fi
+          annotated=$(oras manifest fetch --ca-file "$CERTS/ca.pem" "$REF" |
+            jq -r '.annotations["org.opencontainers.image.revision"]')
+          echo "revision:    $annotated"
+          if [ "$annotated" != "$revision" ]; then
+            echo "::error::The index is annotated with revision '$annotated', not $revision."
             exit 1
           fi
       - name: Install the provider with OpenTofu from the registry

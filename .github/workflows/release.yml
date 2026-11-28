@@ -91,7 +91,10 @@ jobs:
           # tagged commit (goreleaser stamps the binaries with it, too), not
           # the time of this run, so a re-run pushes the same digest.
           SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
-          export SOURCE_DATE_EPOCH
+          # The revision annotation is the tagged commit as well: checkout
+          # left it at HEAD (GITHUB_SHA), gh release download does not move it.
+          OCI_REVISION=$(git rev-parse HEAD)
+          export SOURCE_DATE_EPOCH OCI_REVISION
           # ghcr.io repository names must be lowercase.
           ref=$(scripts/oci-publish.sh dist "$GITHUB_REF_NAME" "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/terraform-provider-pdns")
           {
