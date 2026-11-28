@@ -10,6 +10,8 @@ zones, records and TSIG keys — through its HTTP API using Terraform or OpenTof
 
 ## Support matrix
 
+<!-- Keep minTestedVersion and maxTestedVersion in internal/pdns_client/pdns_client.go in sync with the PowerDNS row. -->
+
 | Component                      | Supported                  | Tested in CI                    |
 | ------------------------------ | -------------------------- | ------------------------------- |
 | Terraform                      | >= 1.0                     | 1.15, 1.16, 1.17                |
@@ -96,6 +98,13 @@ Release builds carry the version and commit of the release. Binaries built with
 `go build` or `go install` (e.g. for `dev_overrides`) take them from the build
 information Go embeds: the module version if known (else `dev`), the git commit and
 `-dirty` for a working tree with uncommitted changes.
+
+After its first request has verified `server_id`, the provider logs the PowerDNS
+server it talks to, and warns if its version is outside the [support matrix](#support-matrix):
+
+```text
+[INFO]  provider.terraform-provider-pdns_v1.2.3: Connected to PowerDNS: daemon_type=authoritative endpoint=https://pdns-auth.example.com server_id=localhost version=5.1.2 ...
+```
 
 Requests to PowerDNS carry the build and the CLI version in their `User-Agent`, e.g.
 `terraform-provider-pdns/1.2.3 (commit 0123456789ab) terraform/1.17.2` (with OpenTofu
