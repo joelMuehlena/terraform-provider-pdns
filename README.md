@@ -82,6 +82,21 @@ resource "pdns_record" "www" {
 
 The provider honors the `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` environment variables.
 
+### Logging and version
+
+Set `TF_LOG=INFO` (or `TF_LOG_PROVIDER=INFO` for the provider's logs only, `DEBUG` for
+every API request) to see which provider build runs. When the provider is configured
+it logs a line like:
+
+```text
+[INFO]  provider.terraform-provider-pdns_v1.2.3: Starting PowerDNS provider: build="1.2.3 (commit 0123456789ab, 2026-01-02T03:04:05Z, go1.27.4 linux/amd64)" commit=0123456789abcdef0123456789abcdef01234567 version=1.2.3 ...
+```
+
+Release builds carry the version and commit of the release. Binaries built with
+`go build` or `go install` (e.g. for `dev_overrides`) take them from the build
+information Go embeds: the module version if known (else `dev`), the git commit and
+`-dirty` for a working tree with uncommitted changes.
+
 ## Resources
 
 | Resource        | Description                                                                                   |

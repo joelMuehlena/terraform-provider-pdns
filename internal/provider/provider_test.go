@@ -15,12 +15,16 @@ import (
 	tfresource "github.com/hashicorp/terraform-plugin-testing/helper/resource"
 
 	fwprovider "github.com/hashicorp/terraform-plugin-framework/provider"
+	"gitlab.com/joelMuehlena/homelab/code/terraform/provider/terraform-provider-pdns/internal/version"
 )
+
+// testBuild is the build information of the provider in tests.
+var testBuild = version.Info{Version: "test", Commit: "0123456789abcdef0123456789abcdef01234567", GoVersion: "go1.0", Platform: "plan9/386"}
 
 // testProviderFactories serves the provider in-process to the Terraform CLI
 // that terraform-plugin-testing drives.
 var testProviderFactories = map[string]func() (tfprotov6.ProviderServer, error){
-	"pdns": providerserver.NewProtocol6WithError(New("test")()),
+	"pdns": providerserver.NewProtocol6WithError(New(testBuild)()),
 }
 
 func TestMain(m *testing.M) {
@@ -37,7 +41,7 @@ func TestMain(m *testing.M) {
 
 func TestProviderMetadata(t *testing.T) {
 	t.Parallel()
-	p := New("1.2.3")()
+	p := New(version.Info{Version: "1.2.3"})()
 
 	resp := &fwprovider.MetadataResponse{}
 	p.Metadata(context.Background(), fwprovider.MetadataRequest{}, resp)
@@ -57,7 +61,7 @@ func TestProviderMetadata(t *testing.T) {
 func TestSchemasAreValid(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	p := New("test")()
+	p := New(testBuild)()
 
 	presp := &fwprovider.SchemaResponse{}
 	p.Schema(ctx, fwprovider.SchemaRequest{}, presp)
@@ -98,7 +102,7 @@ func TestResourceConfigureRejectsWrongProviderData(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 
-	for _, newResource := range New("test")().Resources(ctx) {
+	for _, newResource := range New(testBuild)().Resources(ctx) {
 		r, ok := newResource().(resource.ResourceWithConfigure)
 		if !ok {
 			t.Fatalf("%T does not implement Configure", r)

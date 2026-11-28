@@ -17,7 +17,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"gitlab.com/joelMuehlena/homelab/code/terraform/provider/terraform-provider-pdns/internal/pdns_client"
+	"gitlab.com/joelMuehlena/homelab/code/terraform/provider/terraform-provider-pdns/internal/version"
 )
 
 var (
@@ -56,7 +58,7 @@ func (d *PDNSProviderData) lockZone(zone string) func() {
 }
 
 type PDNSProvider struct {
-	version string
+	build version.Info
 }
 
 type PDNSProviderModel struct {
@@ -73,7 +75,7 @@ const defaultTimeout = 30 * time.Second
 
 func (p *PDNSProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
 	resp.TypeName = "pdns"
-	resp.Version = p.version
+	resp.Version = p.build.Version
 }
 
 func (p *PDNSProvider) Schema(ctx context.Context, req provider.SchemaRequest, resp *provider.SchemaResponse) {
@@ -155,6 +157,8 @@ func newHTTPClient(skipTLSVerify bool, timeout time.Duration) *http.Client {
 }
 
 func (p *PDNSProvider) Configure(ctx context.Context, req provider.ConfigureRequest, resp *provider.ConfigureResponse) {
+	p.logStart(ctx, req.TerraformVersion)
+
 	var data PDNSProviderModel
 
 	resp.Diagnostics.Append(req.Config.Get(ctx, &data)...)
@@ -213,10 +217,32 @@ func (p *PDNSProvider) Functions(ctx context.Context) []func() function.Function
 	return []func() function.Function{}
 }
 
-func New(version string) func() provider.Provider {
+// logStart logs the build of the provider, so that a TF_LOG=INFO log tells
+// which provider binary ran. It is called from Configure: Terraform calls it
+// once in every provider process that talks to PowerDNS (each plan or apply,
+// and each aliased provider configuration), and the framework only attaches
+// the provider logger to the contexts of RPCs, not to the one passed to
+// providerserver.Serve. Processes that only validate or read the schema do
+// not log it.
+func (p *PDNSProvider) logStart(ctx context.Context, terraformVersion string) {
+	tflog.Info(ctx, "Starting PowerDNS provider", map[string]any{
+		"version":           p.build.Version,
+		"commit":            p.build.Commit,
+		"commit_date":       p.build.CommitDate,
+		"modified":          p.build.Modified,
+		"go_version":        p.build.GoVersion,
+		"platform":          p.build.Platform,
+		"build":             p.build.String(),
+		"terraform_version": terraformVersion,
+	})
+}
+
+// New returns the provider factory for the given build, version.Get() for
+// the running binary.
+func New(build version.Info) func() provider.Provider {
 	return func() provider.Provider {
 		return &PDNSProvider{
-			version: version,
+			build: build,
 		}
 	}
 }

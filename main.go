@@ -7,11 +7,8 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 	"gitlab.com/joelMuehlena/homelab/code/terraform/provider/terraform-provider-pdns/internal/provider"
+	"gitlab.com/joelMuehlena/homelab/code/terraform/provider/terraform-provider-pdns/internal/version"
 )
-
-// these will be set by the goreleaser configuration
-// to appropriate values for the compiled binary.
-var version string = "dev"
 
 func main() {
 	var debug bool
@@ -24,7 +21,7 @@ func main() {
 		Debug:   debug,
 	}
 
-	err := providerserver.Serve(context.Background(), provider.New(version), opts)
+	err := providerserver.Serve(context.Background(), provider.New(version.Get()), opts)
 	if err != nil {
 		log.Fatal(err.Error())
 	}
