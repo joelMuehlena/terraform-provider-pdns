@@ -79,6 +79,132 @@ jobs:
             exit 1
           fi
 
+  # Dry run of the OCI publishing of the release workflow: `mise run oci`
+  # pushes a goreleaser snapshot to a throwaway TLS registry, the digest must
+  # be reproducible, and OpenTofu must install the provider from the
+  # registry through an oci_mirror. No signing or attestation. It runs on
+  # every change rather than behind path filters (which would leave a
+  # required check pending): a snapshot build and a few local pushes are
+  # cheap next to the acceptance tests.
+  oci:
+    runs-on: ubuntu-latest
+    env:
+      OCI_REPOSITORY: 127.0.0.1:5000/terraform-provider-pdns
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # goreleaser derives the snapshot version from the latest tag.
+          fetch-depth: 0
+      - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
+        with:
+          install_args: go goreleaser oras opentofu
+          cache: true
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: ${{ runner.os }}-oci-${{ hashFiles('mise.toml', '**/go.sum') }}
+          restore-keys: ${{ runner.os }}-oci-
+      # OpenTofu only talks HTTPS to OCI registries, so the registry gets a
+      # certificate from a CA made up for this run.
+      - name: Start a registry with TLS
+        run: |
+          CERTS=$RUNNER_TEMP/certs
+          echo "CERTS=$CERTS" >> "$GITHUB_ENV"
+          mkdir -p "$CERTS" && cd "$CERTS"
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+            -days 1 -subj /CN=oci-dry-run-ca -keyout ca.key -out ca.pem \
+            -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign
+          openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+            -subj /CN=127.0.0.1 -keyout registry.key -out registry.csr
+          printf '%s\n' subjectAltName=IP:127.0.0.1 extendedKeyUsage=serverAuth > registry.ext
+          openssl x509 -req -in registry.csr -CA ca.pem -CAkey ca.key -CAcreateserial \
+            -days 1 -extfile registry.ext -out registry.pem
+          chmod a+r registry.key
+          docker run -d --name oci-registry -p 127.0.0.1:5000:5000 -v "$CERTS:/certs:ro" \
+            -e REGISTRY_HTTP_TLS_CERTIFICATE=/certs/registry.pem \
+            -e REGISTRY_HTTP_TLS_KEY=/certs/registry.key \
+            docker.io/library/registry:3.1.2@sha256:82f6ff4a7f982960c8aa51617fea3aabc485df6e55cce80d22deb1de36f1bc3c
+          for _ in $(seq 30); do
+            curl -sf --cacert ca.pem https://127.0.0.1:5000/v2/ >/dev/null && exit 0
+            sleep 1
+          done
+          docker logs oci-registry
+          exit 1
+      - name: Publish a snapshot (mise run oci)
+        id: publish
+        run: |
+          ref=$(mise run oci -- --to-ca-file "$CERTS/ca.pem" | tail -n 1)
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "version=$(jq -r .version dist/metadata.json)" >> "$GITHUB_OUTPUT"
+          echo "Pushed \`$ref\`" >> "$GITHUB_STEP_SUMMARY"
+      - name: Check that the digest is reproducible
+        env:
+          REF: ${{ steps.publish.outputs.ref }}
+          VERSION: ${{ steps.publish.outputs.version }}
+        run: |
+          epoch=$(git log -1 --format=%ct)
+          # Later than the first push, so a creation time taken from the
+          # clock would change the digest.
+          sleep 2
+          again=$(SOURCE_DATE_EPOCH=$epoch scripts/oci-publish.sh dist "$VERSION" "$OCI_REPOSITORY" --to-ca-file "$CERTS/ca.pem")
+          tagged=$(oras resolve --ca-file "$CERTS/ca.pem" "$OCI_REPOSITORY:$VERSION")
+          other=$(SOURCE_DATE_EPOCH=$((epoch + 1)) scripts/oci-publish.sh dist "$VERSION" "$RUNNER_TEMP/other" --to-oci-layout)
+          echo "first push:  $REF"
+          echo "second push: $again"
+          echo "tag:         $tagged"
+          echo "other date:  $other"
+          if [ "$again" != "$REF" ] || [ "$tagged" != "${REF#*@}" ]; then
+            echo "::error::Publishing the same snapshot twice gave different digests."
+            exit 1
+          fi
+          if [ "${other#*@}" = "${REF#*@}" ]; then
+            echo "::error::Another SOURCE_DATE_EPOCH gave the same digest."
+            exit 1
+          fi
+      - name: Install the provider with OpenTofu from the registry
+        env:
+          VERSION: ${{ steps.publish.outputs.version }}
+        run: |
+          # Outside the checkout, so that only the CLI configuration below
+          # decides where the provider comes from.
+          dir=$RUNNER_TEMP/tofu
+          mkdir -p "$dir"
+          # OpenTofu has no CA option for OCI registries; Go reads SSL_CERT_FILE.
+          export SSL_CERT_FILE=$CERTS/ca.pem TF_CLI_CONFIG_FILE=$dir/tofurc
+          cat > "$dir/tofurc" <<EOF
+          provider_installation {
+            oci_mirror {
+              repository_template = "${OCI_REPOSITORY%/*}/terraform-provider-\${type}"
+              include             = ["registry.opentofu.org/joelmuehlena/pdns"]
+            }
+            direct {
+              exclude = ["registry.opentofu.org/joelmuehlena/pdns"]
+            }
+          }
+          EOF
+          # A snapshot is a pre-release, so it is selected only by its exact version.
+          cat > "$dir/main.tf" <<EOF
+          terraform {
+            required_providers {
+              pdns = {
+                source  = "joelmuehlena/pdns"
+                version = "$VERSION"
+              }
+            }
+          }
+          EOF
+          tofu -chdir="$dir" init -input=false -no-color | tee "$dir/init.log"
+          grep -F "Installed joelmuehlena/pdns v$VERSION (verified checksum)" "$dir/init.log"
+          # The lock file records the zip's SHA-256 as its zh: hash.
+          platform=$(tofu version -json | jq -r .platform)
+          sum=$(grep "_${platform}.zip\$" "dist/terraform-provider-pdns_${VERSION}_SHA256SUMS" | cut -d' ' -f1)
+          grep -F "\"zh:$sum\"" "$dir/.terraform.lock.hcl"
+          # The installed provider starts and serves its schema.
+          tofu -chdir="$dir" providers schema -json |
+            jq -e '.provider_schemas["registry.opentofu.org/joelmuehlena/pdns"].resource_schemas.pdns_zone' >/dev/null
+
   test:
     name: test (${{ matrix.cli }} ${{ matrix.version }})
     runs-on: ubuntu-latest
@@ -114,7 +240,8 @@ jobs:
           CLI: ${{ matrix.cli }}
         run: |
           if [ "$CLI" = tofu ]; then
-            export TF_ACC_TERRAFORM_PATH="$(command -v tofu)"
+            TF_ACC_TERRAFORM_PATH=$(command -v tofu)
+            export TF_ACC_TERRAFORM_PATH
             export TF_ACC_PROVIDER_HOST=registry.opentofu.org
           fi
           go test -race -count=1 -cover ./...
@@ -164,7 +291,8 @@ jobs:
           PDNS_ACC_SERVER_ARGS: ${{ matrix.server_args }}
         run: |
           if [ "$CLI" = tofu ]; then
-            export TF_ACC_TERRAFORM_PATH="$(command -v tofu)"
+            TF_ACC_TERRAFORM_PATH=$(command -v tofu)
+            export TF_ACC_TERRAFORM_PATH
             export TF_ACC_PROVIDER_HOST=registry.opentofu.org
           fi
           test/acc/run.sh -v

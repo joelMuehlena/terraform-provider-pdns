@@ -414,6 +414,11 @@ oras resolve ghcr.io/joelmuehlena/terraform-provider-pdns:0.4.0
 Both digests match as long as the oras version (`mise.toml`) is the one the
 release used.
 
+CI runs the same on every pull request and push to `main`: the `oci` job
+pushes a snapshot with `mise run oci` to a registry with a throwaway CA,
+pushes it again to check that the digest does not change, and installs it
+with `tofu init` through an `oci_mirror`.
+
 ### Acceptance tests
 
 The acceptance tests (`internal/provider/*_acc_test.go`, `TestAcc*`) run the
