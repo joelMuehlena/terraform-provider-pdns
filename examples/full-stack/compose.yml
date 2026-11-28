@@ -1,0 +1,157 @@
+# PowerDNS Authoritative (gpgsql), PowerDNS Recursor and BIND 9 for the
+# full-stack example. See README.md for the steps; run.sh does all of them.
+#
+# Start in two steps: BIND reads the TSIG keys that infra/ writes to
+# bind/keys/, so it is started after `terraform apply` in infra/:
+#
+#   docker compose up -d --wait pdns-auth recursor
+#   (cd infra && terraform init && terraform apply)
+#   docker compose up -d --wait bind
+#
+# Every DNS server listens on port 5353 inside the network, so that the
+# images, which run as unprivileged users, also work on rootless podman. Ports
+# are only published on 127.0.0.1; override them with the variables below.
+#
+#   PDNS_API_PORT      HTTP API of pdns-auth   (default 18281)
+#   AUTH_DNS_PORT      DNS of pdns-auth        (default 15480, tcp and udp)
+#   RECURSOR_DNS_PORT  DNS of the recursor     (default 15481)
+#   BIND_DNS_PORT      DNS of BIND             (default 15482)
+#   PDNS_API_KEY       API key of pdns-auth    (default example-api-key)
+#   BIND_IMAGE         BIND image, see the bind service
+#
+# The addresses in the network are fixed, because the configurations refer to
+# each other by address (PowerDNS takes primaries and NOTIFY targets as IP
+# addresses). If 10.53.0.0/24 clashes with a local network, change it here and
+# in pdns/pdns.conf, recursor/recursor.conf, bind/named.conf, bind/zones/ and
+# the variables of infra/.
+#
+# The images are pinned to exact versions (BIND to a digest, its tags move);
+# pdns-auth and postgres are the versions of the acceptance tests
+# (test/acc/images/).
+name: pdns-full-stack
+
+services:
+  # Copies the database schema out of the pdns image for the postgres init
+  # scripts.
+  schema:
+    image: docker.io/powerdns/pdns-auth-51:5.1.7
+    user: root
+    entrypoint: ["cp", "/usr/local/share/doc/pdns/schema.pgsql.sql", "/schema/"]
+    network_mode: none
+    volumes:
+      - schema:/schema
+
+  postgres:
+    image: docker.io/library/postgres:17.12-alpine
+    environment:
+      POSTGRES_USER: pdns
+      POSTGRES_PASSWORD: pdns
+      POSTGRES_DB: pdns
+    volumes:
+      - schema:/docker-entrypoint-initdb.d:ro
+    depends_on:
+      schema:
+        condition: service_completed_successfully
+    networks:
+      dns:
+        ipv4_address: 10.53.0.5
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "pdns", "-d", "pdns"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Primary of example.test (kind Master), secondary of legacy.test (kind
+  # Slave, transferred from BIND), RFC2136 dynamic updates signed with TSIG.
+  pdns-auth:
+    image: docker.io/powerdns/pdns-auth-51:5.1.7
+    environment:
+      # Written to pdns.d/_api.conf by the image's entrypoint.
+      PDNS_AUTH_API_KEY: ${PDNS_API_KEY:-example-api-key}
+    volumes:
+      - ./pdns/pdns.conf:/etc/powerdns/pdns.conf:ro
+    ports:
+      - "127.0.0.1:${PDNS_API_PORT:-18281}:8081/tcp"
+      - "127.0.0.1:${AUTH_DNS_PORT:-15480}:5353/tcp"
+      - "127.0.0.1:${AUTH_DNS_PORT:-15480}:5353/udp"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      dns:
+        ipv4_address: 10.53.0.10
+    healthcheck:
+      test:
+        - CMD
+        - python3
+        - -c
+        - |
+          import os, urllib.request
+          urllib.request.urlopen(urllib.request.Request(
+              "http://127.0.0.1:8081/api/v1/servers/localhost",
+              headers={"X-API-Key": os.environ["PDNS_AUTH_API_KEY"]}), timeout=2)
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Resolver for clients: forwards example.test and legacy.test to pdns-auth.
+  recursor:
+    image: docker.io/powerdns/pdns-recursor-54:5.4.9
+    volumes:
+      - ./recursor/recursor.conf:/etc/powerdns/recursor.conf:ro
+    ports:
+      - "127.0.0.1:${RECURSOR_DNS_PORT:-15481}:5353/tcp"
+      - "127.0.0.1:${RECURSOR_DNS_PORT:-15481}:5353/udp"
+    depends_on:
+      pdns-auth:
+        condition: service_healthy
+    networks:
+      dns:
+        ipv4_address: 10.53.0.20
+    healthcheck:
+      test: ["CMD", "rec_control", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  # Secondary of example.test (AXFR from pdns-auth, signed with bind-axfr) and
+  # primary of legacy.test (transferred by pdns-auth, signed with
+  # pdns-secondary). Start it after infra/ wrote bind/keys/tsig-keys.conf.
+  bind:
+    # The ISC image is only built for amd64. On arm64 it needs Rosetta (Docker
+    # Desktop, podman machine with rosetta enabled); under qemu BIND crashes.
+    # There, set BIND_IMAGE to a local name such as
+    # localhost/pdns-full-stack-bind: it cannot be pulled, so compose builds
+    # it from bind/Dockerfile (BIND from Alpine).
+    image: ${BIND_IMAGE:-docker.io/internetsystemsconsortium/bind9:9.20@sha256:978201d91548ec63c3b1c1befd5e6a3c9fa127f79f9058fd82d8e3493fe90ce1}
+    build: ./bind
+    # Appended to the entrypoint `named -u bind`: foreground, log to stderr.
+    command: ["-g", "-c", "/etc/bind/named.conf"]
+    volumes:
+      - ./bind/named.conf:/etc/bind/named.conf:ro
+      - ./bind/zones:/etc/bind/zones:ro
+      - ./bind/keys:/etc/bind/keys:ro
+    ports:
+      - "127.0.0.1:${BIND_DNS_PORT:-15482}:5353/tcp"
+      - "127.0.0.1:${BIND_DNS_PORT:-15482}:5353/udp"
+    depends_on:
+      pdns-auth:
+        condition: service_healthy
+    networks:
+      dns:
+        ipv4_address: 10.53.0.30
+    healthcheck:
+      test: ["CMD-SHELL", "dig @127.0.0.1 -p 5353 +short legacy.test SOA | grep -q ."]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+networks:
+  dns:
+    ipam:
+      config:
+        - subnet: 10.53.0.0/24
+          gateway: 10.53.0.1
+
+volumes:
+  schema:

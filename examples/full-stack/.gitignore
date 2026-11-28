@@ -1,0 +1,8 @@
+.terraform/
+.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+# Local provider builds, see README.md.
+dev-bin/
+dev-mirror/
+dev.tfrc
