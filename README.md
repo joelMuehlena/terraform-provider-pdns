@@ -194,7 +194,8 @@ oras cp -r ghcr.io/joelmuehlena/terraform-provider-pdns:0.4.0 \
     repository_template = "registry.example.com/opentofu/terraform-provider-${type}"
 ```
 
-`-r` also copies the artifacts that refer to it, such as signatures. Without
+`-r` also copies the artifacts that refer to it, such as the signature (see
+[Verifying the OCI artifact](#verifying-the-oci-artifact)). Without
 direct access from the target network, copy through an
 [OCI image layout](https://github.com/opencontainers/image-spec/blob/main/image-layout.md)
 directory:
@@ -207,6 +208,84 @@ oras cp -r ghcr.io/joelmuehlena/terraform-provider-pdns:0.4.0 \
 oras cp -r --from-oci-layout terraform-provider-pdns:0.4.0 \
   registry.internal.example/opentofu/terraform-provider-pdns:0.4.0
 ```
+
+### Verifying the OCI artifact
+
+The release workflow signs the index of each OCI artifact by digest with
+[cosign](https://docs.sigstore.dev/cosign/) keyless signing: the certificate
+is issued by Sigstore's Fulcio for the GitHub OIDC identity of the release
+workflow run for the tag, and the signature is recorded in the Rekor
+transparency log. The signature is a Sigstore bundle attached to the index as
+an OCI referrer (on ghcr.io under the tag `sha256-<index digest>`, which
+OpenTofu ignores as it is not a version). The index names every platform
+manifest, and each manifest its zip, by digest, so verifying the index
+covers all platforms.
+
+OpenTofu does not verify cosign signatures: for an OCI mirror it checks the
+zip against the digest in the manifest (`verified checksum`), and its OCI
+mirror docs describe no signature verification. Signing is therefore
+optional for consumers, and `tofu init` works the same with or without it.
+To rely on it, verify before you mirror or install. With cosign 3:
+
+```sh
+cosign verify \
+  --certificate-identity "https://github.com/joelMuehlena/terraform-provider-pdns/.github/workflows/release.yml@refs/tags/v0.4.0" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ghcr.io/joelmuehlena/terraform-provider-pdns:0.4.0
+```
+
+The identity is case-sensitive and names the tag with its `v`. To accept any
+release tag, use
+`--certificate-identity-regexp '^https://github\.com/joelMuehlena/terraform-provider-pdns/\.github/workflows/release\.yml@refs/tags/v'`
+instead. cosign resolves the tag to a digest; to be sure that you mirror what
+you verified, verify and copy the same digest
+(`oras resolve ghcr.io/joelmuehlena/terraform-provider-pdns:0.4.0`).
+
+`oras cp -r` (see above) copies the signature along with the artifact, so the
+same `cosign verify` works against your registry. (`cosign copy` is
+deprecated in cosign 3 in favour of `oras cp -r`.)
+
+#### Air-gapped verification
+
+The verifying side needs neither ghcr.io nor Sigstore's services: the bundle
+holds the certificate, the signature and the Rekor inclusion proof, and the
+Sigstore trusted root (Fulcio CA certificates and the Rekor and CT log keys)
+can be carried across as a file.
+
+On a connected machine:
+
+```sh
+# Fetch the Sigstore trusted root through TUF
+# (cached in ~/.sigstore/root, or in $TUF_ROOT if set).
+cosign initialize
+cp ~/.sigstore/root/tuf-repo-cdn.sigstore.dev/targets/trusted_root.json .
+
+# Optionally verify here first (cosign verify ... as above), then save the
+# artifact together with its signature.
+oras cp -r ghcr.io/joelmuehlena/terraform-provider-pdns:0.4.0 \
+  --to-oci-layout terraform-provider-pdns:0.4.0
+oras resolve --oci-layout terraform-provider-pdns:0.4.0   # note the digest
+```
+
+Carry the `terraform-provider-pdns` directory and `trusted_root.json` across,
+then push the artifact to the internal registry and verify it there:
+
+```sh
+oras cp -r --from-oci-layout terraform-provider-pdns:0.4.0 \
+  registry.internal.example/opentofu/terraform-provider-pdns:0.4.0
+cosign verify \
+  --trusted-root trusted_root.json \
+  --certificate-identity "https://github.com/joelMuehlena/terraform-provider-pdns/.github/workflows/release.yml@refs/tags/v0.4.0" \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  registry.internal.example/opentofu/terraform-provider-pdns@sha256:<digest>
+```
+
+With `--trusted-root`, cosign does not contact TUF, Fulcio or Rekor; without
+it, it tries to fetch the trusted root from `tuf-repo-cdn.sigstore.dev` and
+fails offline. cosign 3 has no `--offline` flag; the bundle's inclusion proof
+is verified offline anyway. Refresh `trusted_root.json` from time to time:
+it must contain the keys that were valid when a release was signed, and
+Sigstore adds new keys to it when it rotates them.
 
 ## Securing dynamic updates
 

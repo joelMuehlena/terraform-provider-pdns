@@ -45,13 +45,15 @@ jobs:
   # Publishes the release archives as an OpenTofu OCI provider mirror artifact,
   # ghcr.io/<owner>/terraform-provider-pdns:<version> (see README, "Installing
   # from an OCI registry"). It uses the assets of the GitHub release, so the
-  # registry serves the very zips (and checksums) the release does.
+  # registry serves the very zips (and checksums) the release does. The pushed
+  # index is signed keyless with cosign, by digest.
   oci:
     needs: goreleaser
     runs-on: ubuntu-latest
     permissions:
       contents: read # download the release assets
       packages: write # push to ghcr.io
+      id-token: write # keyless cosign signature (GitHub OIDC)
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
@@ -61,6 +63,9 @@ jobs:
         with:
           install_args: oras
           cache: true
+      - uses: sigstore/cosign-installer@756fe2d284c7292c4e9b62c8a28f1e5629c59532 # v4.1.3
+        with:
+          cosign-release: v3.1.4
       - name: Download release archives
         run: >-
           gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dir dist
@@ -74,3 +79,10 @@ jobs:
           ref=$(scripts/oci-publish.sh dist "$GITHUB_REF_NAME" "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/terraform-provider-pdns")
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "Pushed \`$ref\`" >> "$GITHUB_STEP_SUMMARY"
+      # Keyless: the certificate names this workflow and tag, and the bundle
+      # with the transparency log proof is attached to the index as an OCI
+      # referrer, so it can be verified offline. cosign uses the oras login.
+      - name: Sign the OCI artifact
+        run: cosign sign --yes "$REF"
+        env:
+          REF: ${{ steps.push.outputs.ref }}
