@@ -1,0 +1,3 @@
+# tsig-keys.conf is written by infra/ and holds the TSIG secrets.
+*
+!.gitignore

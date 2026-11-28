@@ -84,6 +84,10 @@ The provider arguments (`endpoint`, `api_key`, `server_id`, `skip_tls_verify`,
 `timeout`) are described in [docs/index.md](docs/index.md). The provider honors
 the `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` environment variables.
 
+[`examples/full-stack`](examples/full-stack) runs PowerDNS, the PowerDNS
+Recursor and BIND (secondaries, AXFR, NOTIFY) in containers, with dynamic
+updates from a second stack via `hashicorp/dns`.
+
 ## Resources
 
 | Resource             | Manages                                                                               |

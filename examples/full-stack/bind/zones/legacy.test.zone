@@ -1,0 +1,15 @@
+; legacy.test, maintained in BIND and transferred by pdns-auth as a Slave zone.
+; The NS record and the glue of ns must match nameservers and ttl of
+; pdns_zone.legacy in infra/, or the next plan of infra/ shows a change.
+; Increase the serial after a change and reload: docker compose exec bind rndc reload
+$TTL 3600
+@       IN SOA  ns.legacy.test. hostmaster.legacy.test. (
+                2026112801 ; serial
+                300        ; refresh
+                60         ; retry
+                86400      ; expire
+                60 )       ; negative caching TTL
+        IN NS   ns.legacy.test.
+ns      IN A    10.53.0.30
+www     IN A    192.0.2.20
+@       IN TXT  "served by BIND, transferred by PowerDNS"

@@ -46,13 +46,32 @@ updates:
       include: scope
 
   # Images of the acceptance tests, pinned in test/acc/images/*.Dockerfile
-  # (Dependabot does not follow the variables in the compose files), and the
+  # (Dependabot does not follow the variables in the compose files), the
   # registry of the CI OCI dry run, pinned in test/oci/registry.Dockerfile
-  # (Dependabot does not follow images in workflow run: steps).
+  # (Dependabot does not follow images in workflow run: steps), and the
+  # Alpine BIND image of the full-stack example.
   - package-ecosystem: docker
     directories:
       - /test/acc/images
       - /test/oci
+      - /examples/full-stack/bind
+    schedule:
+      interval: weekly
+    labels:
+      - dependencies
+      - dependencies::docker
+    assignees:
+      - joelMuehlena
+    reviewers:
+      - joelMuehlena
+    commit-message:
+      prefix: deps
+      include: scope
+
+  # Images of the full-stack example. pdns-auth and postgres are the versions
+  # of test/acc/images: merge their updates together.
+  - package-ecosystem: docker-compose
+    directory: /examples/full-stack
     schedule:
       interval: weekly
     labels:
