@@ -145,10 +145,13 @@ OpenTofu >= 1.10; Terraform does not support OCI mirrors.
 - The artifact is an image index with one manifest per release platform, each
   holding the unchanged zip of the GitHub release as its only layer; the
   layer digest is the SHA-256 listed in the release's `_SHA256SUMS` file.
+- The index names the tagged commit it was built from in its
+  `org.opencontainers.image.revision` annotation (the full commit SHA), next
+  to `org.opencontainers.image.source` and `org.opencontainers.image.version`.
 - The digest is reproducible: the index is built only from the release zips,
-  the version and the date of the tagged commit (its
-  `org.opencontainers.image.created` annotation), so anyone can rebuild it
-  from the release assets and compare, see
+  the version and the date and SHA of the tagged commit (its
+  `org.opencontainers.image.created` and `org.opencontainers.image.revision`
+  annotations), so anyone can rebuild it from the release assets and compare, see
   [OCI artifact](#oci-artifact) under Development.
 
 Point the `joelmuehlena/pdns` provider at the mirror in the
@@ -397,11 +400,13 @@ OCI_REPOSITORY=registry.test:5443/terraform-provider-pdns \
 `tofu init` needs the registry on HTTPS (see above), and a snapshot version
 such as `0.3.0-SNAPSHOT-f06c1c6` is a pre-release, so pin it exactly.
 
-The artifact is reproducible from its inputs: the zips, the version and
+The artifact is reproducible from its inputs: the zips, the version,
 `SOURCE_DATE_EPOCH`, which sets the `org.opencontainers.image.created`
-annotation (the only time in it; oras would use the current time). The
-script defaults it to the committer date of the tag `v<version>`, which is
-what the release workflow passes; `mise run oci` uses the date of `HEAD`.
+annotation (the only time in it; oras would use the current time), and
+`OCI_REVISION`, the full commit SHA of the `org.opencontainers.image.revision`
+annotation of the index. The script defaults them to the committer date and
+the commit of the tag `v<version>`, which is what the release workflow
+passes; `mise run oci` uses the date and SHA of `HEAD`.
 To check a release, rebuild it into a local OCI layout from its assets in a
 clone with the tags and compare the digest with the registry's:
 
@@ -416,7 +421,8 @@ release used.
 
 CI runs the same on every pull request and push to `main`: the `oci` job
 pushes a snapshot with `mise run oci` to a registry with a throwaway CA,
-pushes it again to check that the digest does not change, and installs it
+pushes it again to check that the digest does not change, checks that the
+index is annotated with the revision of `HEAD`, and installs it
 with `tofu init` through an `oci_mirror`.
 
 ### Acceptance tests

@@ -152,6 +152,8 @@ jobs:
           VERSION: ${{ steps.publish.outputs.version }}
         run: |
           epoch=$(git log -1 --format=%ct)
+          revision=$(git rev-parse HEAD)
+          export OCI_REVISION=$revision
           # Later than the first push, so a creation time taken from the
           # clock would change the digest.
           sleep 2
@@ -168,6 +170,13 @@ jobs:
           fi
           if [ "${other#*@}" = "${REF#*@}" ]; then
             echo "::error::Another SOURCE_DATE_EPOCH gave the same digest."
+            exit 1
+          fi
+          annotated=$(oras manifest fetch --ca-file "$CERTS/ca.pem" "$REF" |
+            jq -r '.annotations["org.opencontainers.image.revision"]')
+          echo "revision:    $annotated"
+          if [ "$annotated" != "$revision" ]; then
+            echo "::error::The index is annotated with revision '$annotated', not $revision."
             exit 1
           fi
       - name: Install the provider with OpenTofu from the registry

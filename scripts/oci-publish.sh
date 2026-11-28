@@ -27,9 +27,9 @@
 # assembled in a temporary OCI layout and copied to REPOSITORY in one step,
 # so the tag never points at a partial artifact.
 #
-# The artifact is reproducible: the same zips, VERSION and SOURCE_DATE_EPOCH
-# give the same index digest, however often and wherever it is built (with
-# the same oras version). Its only time field, the
+# The artifact is reproducible: the same zips, VERSION, SOURCE_DATE_EPOCH and
+# OCI_REVISION give the same index digest, however often and wherever it is
+# built (with the same oras version). Its only time field, the
 # org.opencontainers.image.created annotation (which oras would otherwise
 # set to the current time), is SOURCE_DATE_EPOCH, and the platforms are
 # always listed in the same (byte-wise) order.
@@ -39,6 +39,10 @@
 #                      annotation; defaults to the committer date of the
 #                      tag vVERSION in this repository, the commit the
 #                      release is built from
+#   OCI_REVISION       full commit SHA the release is built from, for the
+#                      org.opencontainers.image.revision annotation of the
+#                      index; defaults to the commit of the tag vVERSION in
+#                      this repository
 #   OCI_SOURCE         value of the org.opencontainers.image.source annotation
 #                      (default https://github.com/joelMuehlena/terraform-provider-pdns)
 #
@@ -76,6 +80,18 @@ case $epoch in
     exit 1
     ;;
 esac
+revision=${OCI_REVISION:-}
+if [ -z "$revision" ]; then
+  revision=$(git -C "$(dirname "$0")" rev-parse --verify --quiet "refs/tags/v$version^{commit}") || {
+    echo "OCI_REVISION is not set and there is no tag v$version to take the commit from" >&2
+    exit 1
+  }
+fi
+# A full SHA-1 or SHA-256 object name, not an abbreviation or a ref.
+if [[ ! $revision =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+  echo "OCI_REVISION must be a full commit SHA (40 or 64 lowercase hex digits), got '$revision'" >&2
+  exit 1
+fi
 # GNU date, then BSD date.
 created=$(date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$epoch" +%Y-%m-%dT%H:%M:%SZ)
 
@@ -115,12 +131,13 @@ for zip in "$dir/${project}_${version}"_*.zip; do
   platforms+=("$platform")
   echo "packed $os/$arch" >&2
 done
-echo "created $created" >&2
+echo "created $created, revision $revision" >&2
 
 oras manifest index create \
   --artifact-type application/vnd.opentofu.provider \
   --annotation "org.opencontainers.image.created=$created" \
   --annotation "org.opencontainers.image.source=$source_url" \
+  --annotation "org.opencontainers.image.revision=$revision" \
   --annotation "org.opencontainers.image.version=$version" \
   --annotation "org.opencontainers.image.title=$project" \
   --annotation "org.opencontainers.image.description=PowerDNS provider for OpenTofu (OCI provider mirror)" \
