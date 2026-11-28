@@ -196,6 +196,7 @@ func (p *PDNSProvider) Configure(ctx context.Context, req provider.ConfigureRequ
 			// a deleted zone; the check turns that into an error instead of
 			// emptying the state.
 			pdns_client.WithServerCheck(),
+			pdns_client.WithUserAgent(userAgent(p.build, req.TerraformVersion)),
 		),
 	}
 }
@@ -235,6 +236,19 @@ func (p *PDNSProvider) logStart(ctx context.Context, terraformVersion string) {
 		"build":             p.build.String(),
 		"terraform_version": terraformVersion,
 	})
+}
+
+// userAgent returns the User-Agent of the requests to PowerDNS, e.g.
+// "terraform-provider-pdns/1.2.3 (commit 0123456789ab) terraform/1.17.2",
+// so that the PowerDNS or proxy logs tell which provider build and CLI
+// version sent a request. terraformVersion is the version the CLI reports,
+// for OpenTofu the OpenTofu version; it is left out if empty.
+func userAgent(build version.Info, terraformVersion string) string {
+	ua := fmt.Sprintf("terraform-provider-pdns/%s (commit %s)", build.Version, build.ShortCommit())
+	if terraformVersion != "" {
+		ua += " terraform/" + terraformVersion
+	}
+	return ua
 }
 
 // New returns the provider factory for the given build, version.Get() for
