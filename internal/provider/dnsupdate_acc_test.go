@@ -324,8 +324,8 @@ func TestAccZoneLockedCreate(t *testing.T) {
   kind           = "Master"
   lock_dnsupdate = true
   nameservers = [
-    { hostname = "ns1", address = "10.0.0.1" },
-    { hostname = "ns2", address = "2001:db8::2" },
+    { hostname = "ns1", addresses = ["10.0.0.1"] },
+    { hostname = "ns2", addresses = ["2001:db8::2"] },
   ]
   soa = { rname = "hostmaster" }`),
 			Check: check,

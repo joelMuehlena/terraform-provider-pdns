@@ -20,7 +20,7 @@ provider "pdns" {
 
 resource "pdns_zone" "z" {
   name        = %q
-  nameservers = [{ hostname = "ns1", address = "10.0.0.1" }]
+  nameservers = [{ hostname = "ns1", addresses = ["10.0.0.1"] }]
   soa         = { rname = "hostmaster" }
 }
 

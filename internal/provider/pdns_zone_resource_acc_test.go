@@ -73,8 +73,8 @@ func TestAccZoneResource(t *testing.T) {
 
 	nameservers2 := `
   nameservers = [
-    { hostname = "ns1", address = "10.0.0.9" },
-    { hostname = "ns3", address = "10.0.0.3" },
+    { hostname = "ns1", addresses = ["10.0.0.9"] },
+    { hostname = "ns3", addresses = ["10.0.0.3"] },
   ]
   soa = {
     rname   = "admin"
@@ -88,8 +88,8 @@ func TestAccZoneResource(t *testing.T) {
 			{
 				Config: accZoneConfig(env, name, `
   nameservers = [
-    { hostname = "ns1", address = "10.0.0.1" },
-    { hostname = "ns2", address = "2001:db8::2" },
+    { hostname = "ns1", addresses = ["10.0.0.1"] },
+    { hostname = "ns2", addresses = ["2001:db8::2"] },
   ]
   soa = { rname = "hostmaster" }`),
 				Check: resource.ComposeAggregateTestCheckFunc(
@@ -162,7 +162,7 @@ func TestAccZoneResourceTTL(t *testing.T) {
   nameservers = [`+nameservers+`]
   soa         = { rname = "hostmaster" }`)
 	}
-	two := `{ hostname = "ns1", address = "10.0.0.1" }, { hostname = "ns2", address = "2001:db8::2" }`
+	two := `{ hostname = "ns1", addresses = ["10.0.0.1"] }, { hostname = "ns2", addresses = ["2001:db8::2"] }`
 	soa := "SOA " + name + " ns1." + name + " hostmaster." + name + " SERIAL 86400 7200 4000000 11200"
 	update := resource.ConfigPlanChecks{
 		PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction("pdns_zone.z", plancheck.ResourceActionUpdate)},
@@ -189,7 +189,7 @@ func TestAccZoneResourceTTL(t *testing.T) {
 			},
 			{
 				// A nameserver change keeps the TTL.
-				Config:           config("ttl = 300", `{ hostname = "ns1", address = "10.0.0.1" }, { hostname = "ns3", address = "10.0.0.3" }`),
+				Config:           config("ttl = 300", `{ hostname = "ns1", addresses = ["10.0.0.1"] }, { hostname = "ns3", addresses = ["10.0.0.3"] }`),
 				ConfigPlanChecks: update,
 				Check:            env.checkRRsetsTTL(name, 300, soa, "NS "+name+" ns1."+name+",ns3."+name, "A ns1."+name+" 10.0.0.1", "A ns3."+name+" 10.0.0.3"),
 			},
@@ -198,7 +198,7 @@ func TestAccZoneResourceTTL(t *testing.T) {
 				PreConfig: func() {
 					env.replaceRRset(t, name, name, "SOA", "ns1."+name+" hostmaster."+name+" 1 86400 7200 4000000 11200")
 				},
-				Config:           config("ttl = 300", `{ hostname = "ns1", address = "10.0.0.1" }, { hostname = "ns3", address = "10.0.0.3" }`),
+				Config:           config("ttl = 300", `{ hostname = "ns1", addresses = ["10.0.0.1"] }, { hostname = "ns3", addresses = ["10.0.0.3"] }`),
 				ConfigPlanChecks: update,
 				Check:            env.checkRRsetsTTL(name, 300, soa, "NS "+name+" ns1."+name+",ns3."+name, "A ns1."+name+" 10.0.0.1", "A ns3."+name+" 10.0.0.3"),
 			},
@@ -409,16 +409,16 @@ func TestAccZoneResourceNameserverAddressOutOfZone(t *testing.T) {
 				// PowerDNS would refuse the glue record with 422 "Name is out
 				// of zone"; the plan fails instead.
 				Config: accZoneConfig(env, name, `
-  nameservers = [{ hostname = "ns1.other.org.", address = "10.0.0.1" }]
+  nameservers = [{ hostname = "ns1.other.org.", addresses = ["10.0.0.1"] }]
   soa         = { rname = "hostmaster" }`),
 				PlanOnly:    true,
 				ExpectError: regexp.MustCompile(`Nameserver address outside the zone`),
 			},
 			{
-				// Nameservers outside the zone without address are fine.
+				// Nameservers outside the zone without addresses are fine.
 				Config: accZoneConfig(env, name, `
   nameservers = [
-    { hostname = "ns1", address = "10.0.0.1" },
+    { hostname = "ns1", addresses = ["10.0.0.1"] },
     { hostname = "ns2.other.org." },
   ]
   soa = { rname = "hostmaster" }`),
@@ -623,7 +623,7 @@ func TestAccZoneResourceUppercaseName(t *testing.T) {
 }
 
 // TestAccZoneResourceNameserverRespelled verifies that respelling the hostname
-// of a nameserver with an address (relative, fully qualified, other case)
+// of a nameserver with addresses (relative, fully qualified, other case)
 // keeps its glue record.
 func TestAccZoneResourceNameserverRespelled(t *testing.T) {
 	env := testAccPreCheck(t)
@@ -631,8 +631,8 @@ func TestAccZoneResourceNameserverRespelled(t *testing.T) {
 	config := func(ns1, ns2 string) string {
 		return accZoneConfig(env, name, `
   nameservers = [
-    { hostname = "`+ns1+`", address = "10.0.0.1" },
-    { hostname = "`+ns2+`", address = "2001:db8::2" },
+    { hostname = "`+ns1+`", addresses = ["10.0.0.1"] },
+    { hostname = "`+ns2+`", addresses = ["2001:db8::2"] },
   ]
   soa = { rname = "hostmaster" }`)
 	}
@@ -664,8 +664,8 @@ func TestAccZoneResourceDrift(t *testing.T) {
 	// Fully qualified names inside the zone.
 	config := accZoneConfig(env, name, `
   nameservers = [
-    { hostname = "ns1.`+name+`", address = "10.0.0.1" },
-    { hostname = "ns2", address = "10.0.0.2" },
+    { hostname = "ns1.`+name+`", addresses = ["10.0.0.1"] },
+    { hostname = "ns2", addresses = ["10.0.0.2"] },
   ]
   soa = { rname = "hostmaster.`+name+`" }`)
 	want := env.checkRRsets(name,
@@ -721,7 +721,10 @@ func TestAccZoneResourceDrift(t *testing.T) {
 
 // TestAccZoneResourceDualStack creates, changes and imports nameservers with
 // dual-stack glue (addresses) and checks the A and AAAA rrsets on the server,
-// including their TTL and out of band changes to either of them.
+// including their TTL and out of band changes to either of them. It is also
+// the acceptance coverage of the deprecated address: ns2 starts with it,
+// moves to addresses and back, so the backwards compatible create, update
+// and read and the switch in both directions run against a real server.
 func TestAccZoneResourceDualStack(t *testing.T) {
 	env := testAccPreCheck(t)
 	name := env.zoneName(t, "dualstack")
