@@ -12,3 +12,7 @@ import (
 
 // Generate documentation.
 //go:generate go run github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs generate --provider-dir .. -provider-name pdns
+
+// Validate the generated documentation (frontmatter, guide subcategories, one
+// page per resource).
+//go:generate go run github.com/hashicorp/terraform-plugin-docs/cmd/tfplugindocs validate --provider-dir .. -provider-name pdns
