@@ -130,6 +130,84 @@ removed in a future major version. Replace `address = "192.0.2.1"` with
 record. `addresses` also takes several addresses, e.g. an IPv4 and an IPv6
 address for dual-stack glue, and is what `terraform import` fills in.
 
+## Installing from an OCI registry (OpenTofu)
+
+Every release is also published as an OpenTofu
+[OCI provider mirror](https://opentofu.org/docs/cli/oci_registries/provider-mirror/)
+artifact at `ghcr.io/joelmuehlena/terraform-provider-pdns`, so you can install
+the provider from ghcr.io or copy it into your own OCI registry. This needs
+OpenTofu >= 1.10; Terraform does not support OCI mirrors.
+
+- The tag is the exact version without the leading `v`, e.g. `0.4.0`, and
+  `1.2.0-rc.1` for a pre-release. There is no `latest` or any other floating
+  tag. OCI tags cannot contain `+`, so build metadata uses `_`
+  (`1.2.0+build.1` is tagged `1.2.0_build.1`), as OpenTofu expects.
+- The artifact is an image index with one manifest per release platform, each
+  holding the unchanged zip of the GitHub release as its only layer; the
+  layer digest is the SHA-256 listed in the release's `_SHA256SUMS` file.
+
+Point the `joelmuehlena/pdns` provider at the mirror in the
+[CLI configuration](https://opentofu.org/docs/cli/config/config-file/)
+(`~/.tofurc`, or the file `TF_CLI_CONFIG_FILE` names) and keep `direct` for
+every other provider:
+
+```hcl
+provider_installation {
+  oci_mirror {
+    repository_template = "ghcr.io/joelmuehlena/terraform-provider-${type}"
+    include             = ["registry.opentofu.org/joelmuehlena/pdns"]
+  }
+  direct {
+    exclude = ["registry.opentofu.org/joelmuehlena/pdns"]
+  }
+}
+```
+
+The module configuration does not change: it keeps
+`source = "joelmuehlena/pdns"`, and `tofu init` reports
+`Installed joelmuehlena/pdns v0.4.0 (verified checksum)`. The `zh:` hash it
+writes to `.terraform.lock.hcl` is the zip's SHA-256, the same hash the
+OpenTofu registry records, so lock files work with either source.
+
+- **Pre-releases:** as with the registry, OpenTofu selects a pre-release only
+  when the version constraint names it exactly (`version = "1.2.0-rc.1"`);
+  ranges such as `>= 1.2.0` or `~> 1.2` skip them.
+- **Credentials:** pulling the public ghcr.io package needs none. For a
+  private registry OpenTofu uses the credentials of `docker login`,
+  `podman login` or `oras login`, see
+  [OCI Registry Credentials](https://opentofu.org/docs/cli/oci_registries/credentials/).
+- **TLS:** OpenTofu talks to OCI registries over HTTPS only and has no
+  plain-HTTP option. For a registry with a private CA, add the CA to the
+  system trust store or point `SSL_CERT_FILE` at it.
+
+### Mirroring into your own registry
+
+Copy a version with [ORAS](https://oras.land/) (>= 1.3.0) and use your
+registry in `repository_template`:
+
+```sh
+oras cp -r ghcr.io/joelmuehlena/terraform-provider-pdns:0.4.0 \
+  registry.example.com/opentofu/terraform-provider-pdns:0.4.0
+```
+
+```hcl
+    repository_template = "registry.example.com/opentofu/terraform-provider-${type}"
+```
+
+`-r` also copies the artifacts that refer to it, such as signatures. Without
+direct access from the target network, copy through an
+[OCI image layout](https://github.com/opencontainers/image-spec/blob/main/image-layout.md)
+directory:
+
+```sh
+# connected machine
+oras cp -r ghcr.io/joelmuehlena/terraform-provider-pdns:0.4.0 \
+  --to-oci-layout terraform-provider-pdns:0.4.0
+# carry the terraform-provider-pdns directory across, then
+oras cp -r --from-oci-layout terraform-provider-pdns:0.4.0 \
+  registry.internal.example/opentofu/terraform-provider-pdns:0.4.0
+```
+
 ## Securing dynamic updates
 
 By default PowerDNS only requires a TSIG signature for RFC2136 updates while a zone's `TSIG-ALLOW-DNSUPDATE` lists a key. A zone without dnsupdate keys (a new zone, or after the last `pdns_zone_tsig_key` with `dnsupdate = true` is removed) accepts **unsigned** updates from every address in `allow-dnsupdate-from`.
@@ -153,7 +231,25 @@ mise run test      # unit tests
 mise run lint      # golangci-lint
 mise run generate  # format examples and regenerate docs
 mise run testacc   # acceptance tests against PowerDNS in docker
+mise run oci       # goreleaser snapshot, pushed as an OCI mirror artifact
 ```
+
+### OCI artifact
+
+`scripts/oci-publish.sh` builds the OCI provider mirror artifact from a
+directory of release zips and pushes it; the release workflow runs it on the
+assets of each GitHub release. `mise run oci` runs it on a goreleaser
+snapshot (`dist/`) and pushes to `$OCI_REPOSITORY`, by default
+`localhost:5000/terraform-provider-pdns`; arguments go to `oras cp`:
+
+```sh
+mise run oci -- --to-plain-http   # local registry without TLS (inspect only)
+OCI_REPOSITORY=registry.test:5443/terraform-provider-pdns \
+  mise run oci -- --to-ca-file ca.pem
+```
+
+`tofu init` needs the registry on HTTPS (see above), and a snapshot version
+such as `0.3.0-SNAPSHOT-f06c1c6` is a pre-release, so pin it exactly.
 
 ### Acceptance tests
 
