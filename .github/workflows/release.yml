@@ -15,9 +15,11 @@ permissions:
 jobs:
   goreleaser:
     runs-on: ubuntu-latest
-    # GitHub considers creating releases and uploading assets as writing contents.
     permissions:
+      # GitHub considers creating releases and uploading assets as writing contents.
       contents: write
+      id-token: write # sign the build provenance (GitHub OIDC)
+      attestations: write # store it with GitHub's attestations API
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -34,6 +36,7 @@ jobs:
           gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
           passphrase: ${{ secrets.PASSPHRASE }}
       - name: Run GoReleaser
+        id: goreleaser
         uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
           args: release --clean
@@ -41,19 +44,28 @@ jobs:
           # GitHub sets the GITHUB_TOKEN secret automatically.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
+      # SLSA build provenance for every release asset listed in SHA256SUMS
+      # (the zips and the registry manifest JSON), under their release names.
+      # Verify with `gh attestation verify <zip> --repo <owner>/<repo>`.
+      - name: Attest the build provenance of the release archives
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: dist/terraform-provider-pdns_${{ fromJSON(steps.goreleaser.outputs.metadata).version }}_SHA256SUMS
 
   # Publishes the release archives as an OpenTofu OCI provider mirror artifact,
   # ghcr.io/<owner>/terraform-provider-pdns:<version> (see README, "Installing
   # from an OCI registry"). It uses the assets of the GitHub release, so the
   # registry serves the very zips (and checksums) the release does. The pushed
-  # index is signed keyless with cosign, by digest.
+  # index is signed keyless with cosign and gets a GitHub build provenance
+  # attestation, both by digest and both attached to it in the registry.
   oci:
     needs: goreleaser
     runs-on: ubuntu-latest
     permissions:
       contents: read # download the release assets
       packages: write # push to ghcr.io
-      id-token: write # keyless cosign signature (GitHub OIDC)
+      id-token: write # keyless cosign signature and attestation (GitHub OIDC)
+      attestations: write # store the attestation with GitHub's attestations API
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
@@ -75,9 +87,18 @@ jobs:
       - name: Push the OCI artifact
         id: push
         run: |
+          # Reproducible digest: the created annotation is the date of the
+          # tagged commit (goreleaser stamps the binaries with it, too), not
+          # the time of this run, so a re-run pushes the same digest.
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          export SOURCE_DATE_EPOCH
           # ghcr.io repository names must be lowercase.
           ref=$(scripts/oci-publish.sh dist "$GITHUB_REF_NAME" "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/terraform-provider-pdns")
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          {
+            echo "ref=$ref"
+            echo "name=${ref%@*}"
+            echo "digest=${ref#*@}"
+          } >> "$GITHUB_OUTPUT"
           echo "Pushed \`$ref\`" >> "$GITHUB_STEP_SUMMARY"
       # Keyless: the certificate names this workflow and tag, and the bundle
       # with the transparency log proof is attached to the index as an OCI
@@ -86,3 +107,16 @@ jobs:
         run: cosign sign --yes "$REF"
         env:
           REF: ${{ steps.push.outputs.ref }}
+      # SLSA build provenance of the index, signed with the workflow's
+      # identity and stored with GitHub's attestations API and, as a Sigstore
+      # bundle referrer, next to the artifact in the registry (credentials
+      # from ~/.docker/config.json, written by the oras login above).
+      # Storage records (artifact-metadata: write) exist for organization
+      # repositories only, so none is created.
+      - name: Attest the build provenance of the OCI artifact
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.push.outputs.name }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
