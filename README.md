@@ -199,8 +199,8 @@ oras cp -r ghcr.io/joelmuehlena/terraform-provider-pdns:0.4.0 \
     repository_template = "registry.example.com/opentofu/terraform-provider-${type}"
 ```
 
-`-r` also copies the artifacts that refer to it, such as the signature (see
-[Verifying the OCI artifact](#verifying-the-oci-artifact)). Without
+`-r` also copies the artifacts that refer to it, the signature and the
+attestation (see [Verifying the OCI artifact](#verifying-the-oci-artifact)). Without
 direct access from the target network, copy through an
 [OCI image layout](https://github.com/opencontainers/image-spec/blob/main/image-layout.md)
 directory:
@@ -215,6 +215,10 @@ oras cp -r --from-oci-layout terraform-provider-pdns:0.4.0 \
 ```
 
 ### Verifying the OCI artifact
+
+Each release can be verified with cosign (below) and with its GitHub build
+provenance attestation (see
+[Verifying the build provenance](#verifying-the-build-provenance)).
 
 The release workflow signs the index of each OCI artifact by digest with
 [cosign](https://docs.sigstore.dev/cosign/) keyless signing: the certificate
@@ -291,6 +295,64 @@ fails offline. cosign 3 has no `--offline` flag; the bundle's inclusion proof
 is verified offline anyway. Refresh `trusted_root.json` from time to time:
 it must contain the keys that were valid when a release was signed, and
 Sigstore adds new keys to it when it rotates them.
+
+### Verifying the build provenance
+
+The release workflow also creates a
+[GitHub artifact attestation](https://docs.github.com/en/actions/security-guides/using-artifact-attestations-to-establish-provenance-for-builds)
+(SLSA build provenance, signed with Sigstore for the release workflow's
+identity) for the index of the OCI artifact and for every release asset
+listed in `_SHA256SUMS`. It records the repository, the workflow, the tag and
+the commit the release was built from. Verify it with the
+[GitHub CLI](https://cli.github.com/manual/gh_attestation_verify)
+(`gh auth login` first). The public ghcr.io package needs no registry
+login; for other registries `gh` uses the credentials of `docker login`.
+
+```sh
+gh attestation verify oci://ghcr.io/joelmuehlena/terraform-provider-pdns:0.4.0 \
+  --repo joelMuehlena/terraform-provider-pdns
+gh attestation verify terraform-provider-pdns_0.4.0_linux_amd64.zip \
+  --repo joelMuehlena/terraform-provider-pdns
+```
+
+`--owner joelMuehlena` instead of `--repo` accepts any repository of the
+owner. To pin the workflow and the tag as well, add
+`--signer-workflow joelMuehlena/terraform-provider-pdns/.github/workflows/release.yml`
+and `--source-ref refs/tags/v0.4.0`. `--format json` prints the verified
+statement, e.g. for a policy engine.
+
+The attestation of the OCI artifact is stored in two places: with GitHub's
+attestations API, where `gh attestation verify` looks by default, and as a
+Sigstore bundle referrer of the index in the registry, next to the cosign
+signature. `oras cp -r` copies it along when mirroring, and
+`--bundle-from-oci` reads it from there instead of from GitHub.
+
+Air-gapped, `gh attestation verify` needs neither GitHub nor Sigstore when
+it gets the attestation and the trusted root as files or from the registry:
+
+```sh
+# connected machine
+gh attestation trusted-root > trusted_root.jsonl
+gh attestation download oci://ghcr.io/joelmuehlena/terraform-provider-pdns:0.4.0 \
+  --repo joelMuehlena/terraform-provider-pdns   # writes sha256:<digest>.jsonl
+```
+
+Carry `trusted_root.jsonl` (and the `.jsonl` bundle, or the mirrored
+artifact with `oras cp -r` as above) across, then:
+
+```sh
+gh attestation verify oci://registry.internal.example/opentofu/terraform-provider-pdns@sha256:<digest> \
+  --repo joelMuehlena/terraform-provider-pdns \
+  --bundle-from-oci --custom-trusted-root trusted_root.jsonl
+# or, with the downloaded bundle: --bundle sha256:<digest>.jsonl --custom-trusted-root trusted_root.jsonl
+```
+
+Without `--bundle` or `--bundle-from-oci`, `gh` asks the GitHub API for the
+attestation, and without `--custom-trusted-root` it fetches the trusted root
+from Sigstore's TUF repository; both fail offline. With a bundle, `--repo`
+and `--owner` are compared with the names recorded in the certificate; only
+the online lookup notices that a repository has since been renamed or
+replaced. As with cosign, refresh `trusted_root.jsonl` from time to time.
 
 ## Securing dynamic updates
 
