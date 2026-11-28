@@ -10,6 +10,8 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -102,8 +104,15 @@ func (client *PDNSClient) ensureServer(ctx context.Context) error {
 
 	switch resp.StatusCode {
 	case http.StatusOK:
+		var server Server
+		if err := json.NewDecoder(resp.Body).Decode(&server); err != nil {
+			// The check only needs the status; an unexpected body only
+			// costs the log line.
+			tflog.Debug(ctx, "Cannot decode the PowerDNS server", map[string]any{"error": err.Error()})
+		}
 		_, _ = io.Copy(io.Discard, resp.Body)
 		client.serverChecked = true
+		client.logServer(ctx, server)
 		return nil
 	case http.StatusUnauthorized:
 		return &PDNSUnauthorizedError{}
@@ -113,6 +122,72 @@ func (client *PDNSClient) ensureServer(ctx context.Context) error {
 		data, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("checking server %q at %s: unexpected status code %d: %s", client.serverID, client.endpoint, resp.StatusCode, data)
 	}
+}
+
+// Server is the server object of the PowerDNS API,
+// GET /api/v1/servers/{server_id}.
+type Server struct {
+	ID         string `json:"id"`
+	DaemonType string `json:"daemon_type"`
+	Version    string `json:"version"`
+}
+
+// logServer logs the server the client talks to, once after the server
+// check, and warns about versions the provider is not tested with.
+func (client *PDNSClient) logServer(ctx context.Context, server Server) {
+	fields := map[string]any{
+		"endpoint":    redactURL(client.endpoint),
+		"server_id":   client.serverID,
+		"daemon_type": server.DaemonType,
+		"version":     server.Version,
+	}
+	tflog.Info(ctx, "Connected to PowerDNS", fields)
+	if server.DaemonType == "authoritative" && !testedVersion(server.Version) {
+		tflog.Warn(ctx, fmt.Sprintf("PowerDNS %s is not one of the versions this provider is tested with (%s to %s); "+
+			"see the support matrix in the README", server.Version, minTestedVersion, maxTestedVersion), fields)
+	}
+}
+
+// The range of PowerDNS Authoritative versions the provider is tested with,
+// the support matrix in the README and the acceptance tests in CI.
+const (
+	minTestedVersion = "4.9"
+	maxTestedVersion = "5.1"
+)
+
+var majorMinor = regexp.MustCompile(`^(\d+)\.(\d+)(?:[.-]|$)`)
+
+// testedVersion reports whether the major.minor of a PowerDNS version is
+// within minTestedVersion and maxTestedVersion. Versions it cannot parse,
+// such as those of development builds ("0.0.x"), count as tested, so that
+// they never cause a spurious warning.
+func testedVersion(v string) bool {
+	parse := func(v string) (int, int, bool) {
+		m := majorMinor.FindStringSubmatch(v)
+		if m == nil {
+			return 0, 0, false
+		}
+		major, err1 := strconv.Atoi(m[1])
+		minor, err2 := strconv.Atoi(m[2])
+		return major, minor, err1 == nil && err2 == nil && major > 0
+	}
+	major, minor, ok := parse(v)
+	if !ok {
+		return true
+	}
+	minMajor, minMinor, _ := parse(minTestedVersion)
+	maxMajor, maxMinor, _ := parse(maxTestedVersion)
+	version := major*1000 + minor
+	return version >= minMajor*1000+minMinor && version <= maxMajor*1000+maxMinor
+}
+
+// redactURL returns rawURL with a password replaced by "xxxxx", for logs.
+func redactURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	return u.Redacted()
 }
 
 type PDNSZone struct {
