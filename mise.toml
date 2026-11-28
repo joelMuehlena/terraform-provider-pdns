@@ -41,5 +41,6 @@ run = "test/acc/run.sh"
 description = "Build a goreleaser snapshot and push it as an OpenTofu OCI provider mirror artifact to OCI_REPOSITORY (default localhost:5000/terraform-provider-pdns); args go to oras cp"
 run = [
   "goreleaser release --snapshot --clean --skip=sign",
-  'scripts/oci-publish.sh dist "$(jq -r .version dist/metadata.json)" "${OCI_REPOSITORY:-localhost:5000/terraform-provider-pdns}"',
+  # The snapshot has no tag to take the creation date from: use the commit's.
+  'SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct)}" scripts/oci-publish.sh dist "$(jq -r .version dist/metadata.json)" "${OCI_REPOSITORY:-localhost:5000/terraform-provider-pdns}"',
 ]

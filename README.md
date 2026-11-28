@@ -145,6 +145,11 @@ OpenTofu >= 1.10; Terraform does not support OCI mirrors.
 - The artifact is an image index with one manifest per release platform, each
   holding the unchanged zip of the GitHub release as its only layer; the
   layer digest is the SHA-256 listed in the release's `_SHA256SUMS` file.
+- The digest is reproducible: the index is built only from the release zips,
+  the version and the date of the tagged commit (its
+  `org.opencontainers.image.created` annotation), so anyone can rebuild it
+  from the release assets and compare, see
+  [OCI artifact](#oci-artifact) under Development.
 
 Point the `joelmuehlena/pdns` provider at the mirror in the
 [CLI configuration](https://opentofu.org/docs/cli/config/config-file/)
@@ -329,6 +334,23 @@ OCI_REPOSITORY=registry.test:5443/terraform-provider-pdns \
 
 `tofu init` needs the registry on HTTPS (see above), and a snapshot version
 such as `0.3.0-SNAPSHOT-f06c1c6` is a pre-release, so pin it exactly.
+
+The artifact is reproducible from its inputs: the zips, the version and
+`SOURCE_DATE_EPOCH`, which sets the `org.opencontainers.image.created`
+annotation (the only time in it; oras would use the current time). The
+script defaults it to the committer date of the tag `v<version>`, which is
+what the release workflow passes; `mise run oci` uses the date of `HEAD`.
+To check a release, rebuild it into a local OCI layout from its assets in a
+clone with the tags and compare the digest with the registry's:
+
+```sh
+gh release download v0.4.0 --dir rel --pattern '*.zip' --pattern '*_SHA256SUMS'
+scripts/oci-publish.sh rel v0.4.0 rebuilt --to-oci-layout   # prints rebuilt@sha256:...
+oras resolve ghcr.io/joelmuehlena/terraform-provider-pdns:0.4.0
+```
+
+Both digests match as long as the oras version (`mise.toml`) is the one the
+release used.
 
 ### Acceptance tests
 

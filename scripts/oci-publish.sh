@@ -27,13 +27,27 @@
 # assembled in a temporary OCI layout and copied to REPOSITORY in one step,
 # so the tag never points at a partial artifact.
 #
+# The artifact is reproducible: the same zips, VERSION and SOURCE_DATE_EPOCH
+# give the same index digest, however often and wherever it is built (with
+# the same oras version). Its only time field, the
+# org.opencontainers.image.created annotation (which oras would otherwise
+# set to the current time), is SOURCE_DATE_EPOCH, and the platforms are
+# always listed in the same (byte-wise) order.
+#
 # Environment:
-#   OCI_SOURCE  value of the org.opencontainers.image.source annotation
-#               (default https://github.com/joelMuehlena/terraform-provider-pdns)
+#   SOURCE_DATE_EPOCH  creation time (Unix seconds) for the created
+#                      annotation; defaults to the committer date of the
+#                      tag vVERSION in this repository, the commit the
+#                      release is built from
+#   OCI_SOURCE         value of the org.opencontainers.image.source annotation
+#                      (default https://github.com/joelMuehlena/terraform-provider-pdns)
 #
 # Needs oras >= 1.3.0 (see mise.toml). Log in to the registry first, e.g.
 # `oras login ghcr.io`.
 set -euo pipefail
+# Byte-wise glob order, so the index lists the platforms in the same order
+# on every machine.
+export LC_ALL=C
 
 if [ "$#" -lt 3 ]; then
   sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//' >&2
@@ -48,6 +62,22 @@ shift 3
 project=terraform-provider-pdns
 source_url=${OCI_SOURCE:-https://github.com/joelMuehlena/terraform-provider-pdns}
 tag=${version//+/_}
+
+epoch=${SOURCE_DATE_EPOCH:-}
+if [ -z "$epoch" ]; then
+  epoch=$(git -C "$(dirname "$0")" log -1 --format=%ct "refs/tags/v$version" 2>/dev/null) || {
+    echo "SOURCE_DATE_EPOCH is not set and there is no tag v$version to take the date from" >&2
+    exit 1
+  }
+fi
+case $epoch in
+  '' | *[!0-9]*)
+    echo "SOURCE_DATE_EPOCH must be a Unix time in seconds, got '$epoch'" >&2
+    exit 1
+    ;;
+esac
+# GNU date, then BSD date.
+created=$(date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$epoch" +%Y-%m-%dT%H:%M:%SZ)
 
 command -v oras >/dev/null || {
   echo "oras not found; run 'mise install' or see https://oras.land" >&2
@@ -79,14 +109,17 @@ for zip in "$dir/${project}_${version}"_*.zip; do
   (cd "$dir" && oras push --no-tty \
     --artifact-type application/vnd.opentofu.provider-target \
     --artifact-platform "$os/$arch" \
+    --annotation "org.opencontainers.image.created=$created" \
     --oci-layout "$layout:$platform" \
     "$name:archive/zip" >/dev/null)
   platforms+=("$platform")
   echo "packed $os/$arch" >&2
 done
+echo "created $created" >&2
 
 oras manifest index create \
   --artifact-type application/vnd.opentofu.provider \
+  --annotation "org.opencontainers.image.created=$created" \
   --annotation "org.opencontainers.image.source=$source_url" \
   --annotation "org.opencontainers.image.version=$version" \
   --annotation "org.opencontainers.image.title=$project" \

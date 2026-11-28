@@ -75,6 +75,11 @@ jobs:
       - name: Push the OCI artifact
         id: push
         run: |
+          # Reproducible digest: the created annotation is the date of the
+          # tagged commit (goreleaser stamps the binaries with it, too), not
+          # the time of this run, so a re-run pushes the same digest.
+          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          export SOURCE_DATE_EPOCH
           # ghcr.io repository names must be lowercase.
           ref=$(scripts/oci-publish.sh dist "$GITHUB_REF_NAME" "ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/terraform-provider-pdns")
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
