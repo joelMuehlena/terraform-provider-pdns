@@ -41,9 +41,15 @@ provider "pdns" {
 resource "pdns_zone" "example_com" {
   name = "example.com."
 
+  # TTL of the SOA, NS and glue records (soa.ttl is the negative caching TTL).
+  ttl = 3600
+
   nameservers = [
-    { hostname = "ns1", address = "10.10.10.1" },
-    { hostname = "ns2", address = "10.10.10.2" },
+    # Glue records: dual-stack (A and AAAA) for ns1, IPv4 only for ns2.
+    { hostname = "ns1", addresses = ["10.10.10.1", "2001:db8::1"] },
+    { hostname = "ns2", addresses = ["10.10.10.2"] },
+    # Outside the zone, so without glue records.
+    { hostname = "ns.example.net." },
   ]
 
   soa = {
@@ -80,12 +86,18 @@ The provider honors the `HTTPS_PROXY`, `HTTP_PROXY` and `NO_PROXY` environment v
 
 | Resource        | Description                                                                                   |
 | --------------- | --------------------------------------------------------------------------------------------- |
-| `pdns_zone`     | A zone including its SOA and NS records.                                                      |
+| `pdns_zone`     | A zone including its SOA and NS records and the A/AAAA glue records of its nameservers.       |
 | `pdns_record`   | A single rrset within a zone.                                                                 |
 | `pdns_tsig_key` | A TSIG key. The secret is set via `key` or the write-only `key_wo` (Terraform/OpenTofu >= 1.11). |
 | `pdns_zone_tsig_key` | Attaches a TSIG key to a zone for `dnsupdate`, `axfr` and/or `secondary`. Many keys per zone and many zones per key. |
 
 See the [`docs/`](./docs) directory for the full resource reference.
+
+The `address` attribute of `pdns_zone` nameservers is deprecated and will be
+removed in a future major version. Replace `address = "192.0.2.1"` with
+`addresses = ["192.0.2.1"]`; with the same address, the switch changes no glue
+record. `addresses` also takes several addresses, e.g. an IPv4 and an IPv6
+address for dual-stack glue, and is what `terraform import` fills in.
 
 ## Securing dynamic updates
 

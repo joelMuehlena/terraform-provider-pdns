@@ -83,8 +83,8 @@ func TestZoneResource(t *testing.T) {
 			{
 				Config: zoneConfig(fake, `
   nameservers = [
-    { hostname = "ns1", address = "10.0.0.1" },
-    { hostname = "ns2", address = "2001:db8::2" },
+    { hostname = "ns1", addresses = ["10.0.0.1"] },
+    { hostname = "ns2", addresses = ["2001:db8::2"] },
   ]
   soa = { rname = "hostmaster" }`),
 				Check: resource.ComposeAggregateTestCheckFunc(
@@ -104,8 +104,8 @@ func TestZoneResource(t *testing.T) {
 				// Nameserver and SOA changes: records follow, serial increases.
 				Config: zoneConfig(fake, `
   nameservers = [
-    { hostname = "ns1", address = "10.0.0.9" },
-    { hostname = "ns3", address = "10.0.0.3" },
+    { hostname = "ns1", addresses = ["10.0.0.9"] },
+    { hostname = "ns3", addresses = ["10.0.0.3"] },
   ]
   soa = {
     rname   = "admin"
@@ -138,8 +138,8 @@ func TestZoneResource(t *testing.T) {
   kind   = "Master"
   dnssec = true
   nameservers = [
-    { hostname = "ns1", address = "10.0.0.9" },
-    { hostname = "ns3", address = "10.0.0.3" },
+    { hostname = "ns1", addresses = ["10.0.0.9"] },
+    { hostname = "ns3", addresses = ["10.0.0.3"] },
   ]
   soa = {
     rname   = "admin"
@@ -157,8 +157,8 @@ func TestZoneResource(t *testing.T) {
 				// And back: dnssec = false must be sent explicitly.
 				Config: zoneConfig(fake, `
   nameservers = [
-    { hostname = "ns1", address = "10.0.0.9" },
-    { hostname = "ns3", address = "10.0.0.3" },
+    { hostname = "ns1", addresses = ["10.0.0.9"] },
+    { hostname = "ns3", addresses = ["10.0.0.3"] },
   ]
   soa = {
     rname   = "admin"
@@ -177,6 +177,45 @@ func TestZoneResource(t *testing.T) {
 }
 
 func TestZoneResourceNameserverGlue(t *testing.T) {
+	t.Parallel()
+	fake := newFakePDNS(t)
+	soa := "SOA example.test. ns1.example.test. hostmaster.example.test. SERIAL 86400 7200 4000000 11200"
+	config := func(nameservers string) string {
+		return zoneConfig(fake, `
+  nameservers = [`+nameservers+`]
+  soa         = { rname = "hostmaster" }`)
+	}
+
+	resource.UnitTest(t, resource.TestCase{
+		ProtoV6ProviderFactories: testProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: config(`{ hostname = "ns1", addresses = ["10.0.0.1"] }, { hostname = "ns2" }, { hostname = "ns3", addresses = ["10.0.0.3"] }`),
+				Check:  checkRRsets(fake, "example.test.", soa, "A ns1.example.test. 10.0.0.1", "A ns3.example.test. 10.0.0.3"),
+			},
+			{
+				// Removing a nameserver without addresses: no glue to delete.
+				Config: config(`{ hostname = "ns1", addresses = ["10.0.0.1"] }, { hostname = "ns3", addresses = ["10.0.0.3"] }`),
+				Check:  checkRRsets(fake, "example.test.", soa, "A ns1.example.test. 10.0.0.1", "A ns3.example.test. 10.0.0.3"),
+			},
+			{
+				// Removing the addresses deletes the glue record.
+				Config: config(`{ hostname = "ns1", addresses = ["10.0.0.1"] }, { hostname = "ns3" }`),
+				Check:  checkRRsets(fake, "example.test.", soa, "A ns1.example.test. 10.0.0.1"),
+			},
+			{
+				// Changing the address family replaces the A by an AAAA record.
+				Config: config(`{ hostname = "ns1", addresses = ["2001:db8::1"] }, { hostname = "ns3" }`),
+				Check:  checkRRsets(fake, "example.test.", soa, "AAAA ns1.example.test. 2001:db8::1"),
+			},
+		},
+	})
+}
+
+// TestZoneResourceLegacyAddressGlue is legacy coverage: the glue lifecycle of
+// TestZoneResourceNameserverGlue (create, update, remove, family change) with
+// the deprecated address, which keeps working until it is removed.
+func TestZoneResourceLegacyAddressGlue(t *testing.T) {
 	t.Parallel()
 	fake := newFakePDNS(t)
 	soa := "SOA example.test. ns1.example.test. hostmaster.example.test. SERIAL 86400 7200 4000000 11200"
@@ -211,6 +250,8 @@ func TestZoneResourceNameserverGlue(t *testing.T) {
 		},
 	})
 }
+
+// checkMasters asserts the primaries of a zone on the fake server.
 
 // checkMasters asserts the primaries of a zone on the fake server.
 func checkMasters(fake *fakePDNS, zoneName, kind string, want ...string) resource.TestCheckFunc {
@@ -309,7 +350,7 @@ func TestZoneResourceFullyQualifiedNames(t *testing.T) {
 	fake := newFakePDNS(t)
 	today := time.Now().Format("20060102")
 	config := zoneConfig(fake, `
-  nameservers = [{ hostname = "ns1.example.test.", address = "10.0.0.1" }]
+  nameservers = [{ hostname = "ns1.example.test.", addresses = ["10.0.0.1"] }]
   soa         = { rname = "hostmaster.example.test." }`)
 
 	resource.UnitTest(t, resource.TestCase{
@@ -375,8 +416,8 @@ func TestZoneResourceNameserverAddressDrift(t *testing.T) {
 	fake := newFakePDNS(t)
 	config := zoneConfig(fake, `
   nameservers = [
-    { hostname = "ns1", address = "10.0.0.1" },
-    { hostname = "ns2", address = "10.0.0.2" },
+    { hostname = "ns1", addresses = ["10.0.0.1"] },
+    { hostname = "ns2", addresses = ["10.0.0.2"] },
   ]
   soa = { rname = "hostmaster" }`)
 	want := checkRRsets(fake, "example.test.",
@@ -563,28 +604,28 @@ func TestZoneResourceErrors(t *testing.T) {
 	})
 
 	validation := map[string]struct{ body, wantErr string }{
-		"name without dot":      {`nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = { rname = "h" }`, `Name must end with a dot`},
-		"no nameservers":        {`nameservers = []` + "\n" + `soa = { rname = "h" }`, `at least 1`},
-		"invalid address":       {`nameservers = [{ hostname = "ns1", address = "nope" }]` + "\n" + `soa = { rname = "h" }`, `not an IPv4 or IPv6\s+address`},
-		"hex hostname address":  {`nameservers = [{ hostname = "ns1", address = "cafe" }]` + "\n" + `soa = { rname = "h" }`, `"cafe" is not a valid nameserver address`},
-		"invalid kind":          {`kind = "Bogus"` + "\n" + `nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = { rname = "h" }`, `Invalid Attribute Value Match`},
-		"missing soa":           {`nameservers = [{ hostname = "ns1" }]`, `"soa" is required`},
-		"missing soa rname":     {`nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = {}`, `rname`},
-		"hostname @":            {`nameservers = [{ hostname = "@" }]` + "\n" + `soa = { rname = "h" }`, `"@" is not supported`},
-		"empty hostname":        {`nameservers = [{ hostname = "" }]` + "\n" + `soa = { rname = "h" }`, `Invalid DNS name`},
-		"rname @":               {`nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = { rname = "@" }`, `"@" is not supported`},
-		"rname empty label":     {`nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = { rname = "host..master" }`, `empty label`},
-		"rname email":           {`nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = { rname = "hostmaster@example.test" }`, `Write\s+"hostmaster.example.test." instead`},
-		"masters on Native":     {`masters = ["192.0.2.1"]` + "\n" + `nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = { rname = "h" }`, `masters requires a secondary zone`},
-		"out-of-zone address":   {`nameservers = [{ hostname = "ns1" }, { hostname = "ns2.other.org.", address = "10.0.0.2" }]` + "\n" + `soa = { rname = "h" }`, `ns2.other.org. is not inside the zone\s+example.test.`},
-		"duplicate nameserver":  {`nameservers = [{ hostname = "ns1" }, { hostname = "ns2" }, { hostname = "NS1.example.test." }]` + "\n" + `soa = { rname = "h" }`, `NS1.example.test. is listed more than once \(at\s+index 0 and 2\)`},
-		"dual-stack glue":       {`nameservers = [{ hostname = "ns1", address = "10.0.0.1" }, { hostname = "ns1", address = "2001:db8::1" }]` + "\n" + `soa = { rname = "h" }`, `(?s)Duplicate nameserver.*list them in\s+its\s+addresses`},
-		"address and addresses": {`nameservers = [{ hostname = "ns1", address = "10.0.0.1", addresses = ["10.0.0.1"] }]` + "\n" + `soa = { rname = "h" }`, `Invalid Attribute Combination`},
-		"empty addresses":       {`nameservers = [{ hostname = "ns1", addresses = [] }]` + "\n" + `soa = { rname = "h" }`, `at least 1`},
-		"invalid addresses":     {`nameservers = [{ hostname = "ns1", addresses = ["10.0.0.1", "nope"] }]` + "\n" + `soa = { rname = "h" }`, `"nope" is not a valid nameserver\s+address`},
-		"duplicate addresses":   {`nameservers = [{ hostname = "ns1", addresses = ["2001:db8::1", "2001:DB8:0::1"] }]` + "\n" + `soa = { rname = "h" }`, `Duplicate IP address`},
-		"out-of-zone addresses": {`nameservers = [{ hostname = "ns1" }, { hostname = "ns2.other.org.", addresses = ["10.0.0.2", "2001:db8::2"] }]` + "\n" + `soa = { rname = "h" }`, `ns2.other.org. is not inside the zone\s+example.test.`},
-		"invalid primary":       {`kind = "Slave"` + "\n" + `masters = ["primary.example.org"]` + "\n" + `nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = { rname = "h" }`, `Invalid primary`},
+		"name without dot":           {`nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = { rname = "h" }`, `Name must end with a dot`},
+		"no nameservers":             {`nameservers = []` + "\n" + `soa = { rname = "h" }`, `at least 1`},
+		"invalid legacy address":     {`nameservers = [{ hostname = "ns1", address = "nope" }]` + "\n" + `soa = { rname = "h" }`, `not an IPv4 or IPv6\s+address`},
+		"hex hostname address":       {`nameservers = [{ hostname = "ns1", addresses = ["cafe"] }]` + "\n" + `soa = { rname = "h" }`, `"cafe" is not a valid nameserver address`},
+		"invalid kind":               {`kind = "Bogus"` + "\n" + `nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = { rname = "h" }`, `Invalid Attribute Value Match`},
+		"missing soa":                {`nameservers = [{ hostname = "ns1" }]`, `"soa" is required`},
+		"missing soa rname":          {`nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = {}`, `rname`},
+		"hostname @":                 {`nameservers = [{ hostname = "@" }]` + "\n" + `soa = { rname = "h" }`, `"@" is not supported`},
+		"empty hostname":             {`nameservers = [{ hostname = "" }]` + "\n" + `soa = { rname = "h" }`, `Invalid DNS name`},
+		"rname @":                    {`nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = { rname = "@" }`, `"@" is not supported`},
+		"rname empty label":          {`nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = { rname = "host..master" }`, `empty label`},
+		"rname email":                {`nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = { rname = "hostmaster@example.test" }`, `Write\s+"hostmaster.example.test." instead`},
+		"masters on Native":          {`masters = ["192.0.2.1"]` + "\n" + `nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = { rname = "h" }`, `masters requires a secondary zone`},
+		"out-of-zone legacy address": {`nameservers = [{ hostname = "ns1" }, { hostname = "ns2.other.org.", address = "10.0.0.2" }]` + "\n" + `soa = { rname = "h" }`, `ns2.other.org. is not inside the zone\s+example.test.`},
+		"duplicate nameserver":       {`nameservers = [{ hostname = "ns1" }, { hostname = "ns2" }, { hostname = "NS1.example.test." }]` + "\n" + `soa = { rname = "h" }`, `NS1.example.test. is listed more than once \(at\s+index 0 and 2\)`},
+		"dual-stack glue":            {`nameservers = [{ hostname = "ns1", addresses = ["10.0.0.1"] }, { hostname = "ns1", addresses = ["2001:db8::1"] }]` + "\n" + `soa = { rname = "h" }`, `(?s)Duplicate nameserver.*list them in\s+its\s+addresses`},
+		"address and addresses":      {`nameservers = [{ hostname = "ns1", address = "10.0.0.1", addresses = ["10.0.0.1"] }]` + "\n" + `soa = { rname = "h" }`, `Invalid Attribute Combination`},
+		"empty addresses":            {`nameservers = [{ hostname = "ns1", addresses = [] }]` + "\n" + `soa = { rname = "h" }`, `at least 1`},
+		"invalid addresses":          {`nameservers = [{ hostname = "ns1", addresses = ["10.0.0.1", "nope"] }]` + "\n" + `soa = { rname = "h" }`, `"nope" is not a valid nameserver\s+address`},
+		"duplicate addresses":        {`nameservers = [{ hostname = "ns1", addresses = ["2001:db8::1", "2001:DB8:0::1"] }]` + "\n" + `soa = { rname = "h" }`, `Duplicate IP address`},
+		"out-of-zone addresses":      {`nameservers = [{ hostname = "ns1" }, { hostname = "ns2.other.org.", addresses = ["10.0.0.2", "2001:db8::2"] }]` + "\n" + `soa = { rname = "h" }`, `ns2.other.org. is not inside the zone\s+example.test.`},
+		"invalid primary":            {`kind = "Slave"` + "\n" + `masters = ["primary.example.org"]` + "\n" + `nameservers = [{ hostname = "ns1" }]` + "\n" + `soa = { rname = "h" }`, `Invalid primary`},
 	}
 	for name, tt := range validation {
 		t.Run(name, func(t *testing.T) {
@@ -754,7 +795,7 @@ func TestZoneResourceCreateIsNeverUnlocked(t *testing.T) {
 					Config: zoneConfig(fake, `
   kind           = "`+kind+`"
   lock_dnsupdate = true
-  nameservers = [{ hostname = "ns1", address = "10.0.0.1" }]
+  nameservers = [{ hostname = "ns1", addresses = ["10.0.0.1"] }]
   soa         = { rname = "hostmaster" }`),
 					Check: resource.ComposeAggregateTestCheckFunc(
 						resource.TestCheckResourceAttr("pdns_zone.z", "kind", kind),
@@ -1033,12 +1074,12 @@ func TestZoneResourceRemoveNameserverWithDeletedGlue(t *testing.T) {
 	resource.UnitTest(t, resource.TestCase{
 		ProtoV6ProviderFactories: testProviderFactories,
 		Steps: []resource.TestStep{
-			{Config: config(`{ hostname = "ns1", address = "10.0.0.1" }, { hostname = "ns2", address = "10.0.0.2" }`)},
+			{Config: config(`{ hostname = "ns1", addresses = ["10.0.0.1"] }, { hostname = "ns2", addresses = ["10.0.0.2"] }`)},
 			{
-				// ns2's glue is deleted out of band (read back as a null
-				// address) and ns2 is removed in the same apply.
+				// ns2's glue is deleted out of band (read back as null
+				// addresses) and ns2 is removed in the same apply.
 				PreConfig: func() { setGlue(fake, "example.test.", "ns2.example.test.") },
-				Config:    config(`{ hostname = "ns1", address = "10.0.0.1" }`),
+				Config:    config(`{ hostname = "ns1", addresses = ["10.0.0.1"] }`),
 				Check: checkRRsets(fake, "example.test.",
 					"SOA example.test. ns1.example.test. hostmaster.example.test. SERIAL 86400 7200 4000000 11200",
 					"A ns1.example.test. 10.0.0.1",
@@ -1073,7 +1114,7 @@ func TestZoneResourceTTL(t *testing.T) {
   nameservers = [`+nameservers+`]
   soa         = { rname = "hostmaster" }`)
 	}
-	two := `{ hostname = "ns1", address = "10.0.0.1" }, { hostname = "ns2", address = "2001:db8::2" }`
+	two := `{ hostname = "ns1", addresses = ["10.0.0.1"] }, { hostname = "ns2", addresses = ["2001:db8::2"] }`
 	update := resource.ConfigPlanChecks{
 		PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction("pdns_zone.z", plancheck.ResourceActionUpdate)},
 	}
@@ -1096,12 +1137,12 @@ func TestZoneResourceTTL(t *testing.T) {
 			},
 			{
 				// A nameserver change keeps the TTL of the replaced rrsets.
-				Config: config("", `{ hostname = "ns1", address = "10.0.0.1" }, { hostname = "ns3", address = "10.0.0.3" }`),
+				Config: config("", `{ hostname = "ns1", addresses = ["10.0.0.1"] }, { hostname = "ns3", addresses = ["10.0.0.3"] }`),
 				Check:  checkZoneTTLs(fake, "example.test.", 3600),
 			},
 			{
 				// Changing the TTL rewrites all of them in place.
-				Config:           config("ttl = 300", `{ hostname = "ns1", address = "10.0.0.1" }, { hostname = "ns3", address = "10.0.0.3" }`),
+				Config:           config("ttl = 300", `{ hostname = "ns1", addresses = ["10.0.0.1"] }, { hostname = "ns3", addresses = ["10.0.0.3"] }`),
 				ConfigPlanChecks: update,
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("pdns_zone.z", "ttl", "300"),
@@ -1121,7 +1162,7 @@ func TestZoneResourceTTL(t *testing.T) {
 						}
 					})
 				},
-				Config:           config("ttl = 300", `{ hostname = "ns1", address = "10.0.0.1" }, { hostname = "ns3", address = "10.0.0.3" }`),
+				Config:           config("ttl = 300", `{ hostname = "ns1", addresses = ["10.0.0.1"] }, { hostname = "ns3", addresses = ["10.0.0.3"] }`),
 				ConfigPlanChecks: update,
 				Check:            checkZoneTTLs(fake, "example.test.", 300),
 			},
@@ -1134,7 +1175,7 @@ func TestZoneResourceTTLWithoutSOARecord(t *testing.T) {
 	fake := newFakePDNS(t)
 	config := func(ttl string) string {
 		return zoneConfig(fake, ttl+`
-  nameservers = [{ hostname = "ns1", address = "10.0.0.1" }]
+  nameservers = [{ hostname = "ns1", addresses = ["10.0.0.1"] }]
   soa = {
     rname         = "hostmaster"
     create_record = false
@@ -1337,8 +1378,8 @@ func TestZoneResourceNameserverRespelled(t *testing.T) {
 	config := func(ns1, ns2 string) string {
 		return zoneConfig(fake, `
   nameservers = [
-    { hostname = "`+ns1+`", address = "10.0.0.1" },
-    { hostname = "`+ns2+`", address = "2001:db8::2" },
+    { hostname = "`+ns1+`", addresses = ["10.0.0.1"] },
+    { hostname = "`+ns2+`", addresses = ["2001:db8::2"] },
   ]
   soa = { rname = "hostmaster" }`)
 	}
@@ -1350,7 +1391,7 @@ func TestZoneResourceNameserverRespelled(t *testing.T) {
 		)
 	}
 
-	// Respelling a hostname with the same address keeps its glue record.
+	// Respelling a hostname with the same addresses keeps its glue record.
 	resource.UnitTest(t, resource.TestCase{
 		ProtoV6ProviderFactories: testProviderFactories,
 		Steps: []resource.TestStep{
@@ -1429,6 +1470,9 @@ func (g *glueChanges) check(want ...string) resource.TestCheckFunc {
 	}
 }
 
+// TestZoneResourceDualStackGlue changes the glue of nameservers with
+// addresses and records the rrset changes. Its later steps are legacy
+// coverage of switching between addresses and the deprecated address.
 func TestZoneResourceDualStackGlue(t *testing.T) {
 	t.Parallel()
 	fake := newFakePDNS(t)
@@ -1451,38 +1495,48 @@ func TestZoneResourceDualStackGlue(t *testing.T) {
 		}
 	}
 	dualStack := `addresses = ["10.0.0.1", "2001:db8::1"]`
+	ns2 := `addresses = ["10.0.0.2"]`
 
 	resource.UnitTest(t, resource.TestCase{
 		ProtoV6ProviderFactories: testProviderFactories,
 		Steps: []resource.TestStep{
-			step(dualStack, `address = "10.0.0.2"`,
+			step(dualStack, ns2,
 				checkRRsets(fake, "example.test.", soa, "A ns1.example.test. 10.0.0.1", "AAAA ns1.example.test. 2001:db8::1", "A ns2.example.test. 10.0.0.2"),
 				resource.TestCheckTypeSetElemAttr("pdns_zone.z", "nameservers.0.addresses.*", "10.0.0.1"),
 				resource.TestCheckTypeSetElemAttr("pdns_zone.z", "nameservers.0.addresses.*", "2001:db8::1"),
 				resource.TestCheckNoResourceAttr("pdns_zone.z", "nameservers.0.address"),
-				resource.TestCheckResourceAttr("pdns_zone.z", "nameservers.1.address", "10.0.0.2"),
-				resource.TestCheckNoResourceAttr("pdns_zone.z", "nameservers.1.addresses"),
+				resource.TestCheckResourceAttr("pdns_zone.z", "nameservers.1.addresses.#", "1"),
+				resource.TestCheckNoResourceAttr("pdns_zone.z", "nameservers.1.address"),
 			),
 			// Several addresses per family: one rrset each.
-			step(`addresses = ["2001:db8::2", "10.0.0.11", "2001:db8::1", "10.0.0.1"]`, `address = "10.0.0.2"`,
+			step(`addresses = ["2001:db8::2", "10.0.0.11", "2001:db8::1", "10.0.0.1"]`, ns2,
 				checkRRsets(fake, "example.test.", soa, "A ns1.example.test. 10.0.0.1,10.0.0.11", "AAAA ns1.example.test. 2001:db8::1,2001:db8::2", "A ns2.example.test. 10.0.0.2"),
 				changes.check("REPLACE A ns1.example.test.", "REPLACE AAAA ns1.example.test."),
 			),
 			// Removing all IPv6 addresses deletes the AAAA rrset only.
-			step(`addresses = ["10.0.0.1", "10.0.0.11"]`, `address = "10.0.0.2"`,
+			step(`addresses = ["10.0.0.1", "10.0.0.11"]`, ns2,
 				checkRRsets(fake, "example.test.", soa, "A ns1.example.test. 10.0.0.1,10.0.0.11", "A ns2.example.test. 10.0.0.2"),
 				changes.check("DELETE AAAA ns1.example.test."),
 			),
 			// Adding an IPv6 address writes the AAAA rrset and keeps the A one.
-			step(`addresses = ["10.0.0.1", "10.0.0.11", "2001:db8::1"]`, `address = "10.0.0.2"`,
+			step(`addresses = ["10.0.0.1", "10.0.0.11", "2001:db8::1"]`, ns2,
 				checkRRsets(fake, "example.test.", soa, "A ns1.example.test. 10.0.0.1,10.0.0.11", "AAAA ns1.example.test. 2001:db8::1", "A ns2.example.test. 10.0.0.2"),
 				changes.check("REPLACE AAAA ns1.example.test."),
 			),
-			// Moving the same address from address to addresses and back
-			// changes no glue record.
-			step(dualStack, `addresses = ["10.0.0.2"]`,
+			// Legacy coverage from here on: switching between addresses and
+			// the deprecated address. Moving the same address from
+			// addresses to address changes no glue record (only ns1's A
+			// rrset changes, back to one address).
+			step(dualStack, `address = "10.0.0.2"`,
 				checkRRsets(fake, "example.test.", soa, "A ns1.example.test. 10.0.0.1", "AAAA ns1.example.test. 2001:db8::1", "A ns2.example.test. 10.0.0.2"),
 				changes.check("REPLACE A ns1.example.test."),
+				resource.TestCheckResourceAttr("pdns_zone.z", "nameservers.1.address", "10.0.0.2"),
+				resource.TestCheckNoResourceAttr("pdns_zone.z", "nameservers.1.addresses"),
+			),
+			// And back to addresses: no glue change either.
+			step(dualStack, ns2,
+				checkRRsets(fake, "example.test.", soa, "A ns1.example.test. 10.0.0.1", "AAAA ns1.example.test. 2001:db8::1", "A ns2.example.test. 10.0.0.2"),
+				changes.check(),
 				resource.TestCheckNoResourceAttr("pdns_zone.z", "nameservers.1.address"),
 				resource.TestCheckResourceAttr("pdns_zone.z", "nameservers.1.addresses.#", "1"),
 			),
@@ -1510,11 +1564,12 @@ func TestZoneResourceDualStackGlue(t *testing.T) {
 				),
 			},
 			{
-				// Removing the nameserver deletes both rrsets.
+				// Removing the nameserver deletes both rrsets; moving ns2 from
+				// address to addresses with the same address changes none.
 				PreConfig: changes.reset,
 				Config: zoneConfig(fake, `
   ttl         = 300
-  nameservers = [{ hostname = "ns2", address = "2001:db8::2" }]
+  nameservers = [{ hostname = "ns2", addresses = ["2001:db8::2"] }]
   soa         = { rname = "hostmaster" }`),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					checkRRsets(fake, "example.test.", "SOA example.test. ns2.example.test. hostmaster.example.test. SERIAL 86400 7200 4000000 11200", "AAAA ns2.example.test. 2001:db8::2"),
@@ -1546,6 +1601,7 @@ func TestZoneResourceDualStackDrift(t *testing.T) {
   nameservers = [
     { hostname = "ns1", addresses = ["10.0.0.1", "2001:DB8::1"] },
     { hostname = "ns2", addresses = ["10.0.0.2"] },
+    # Legacy coverage: ns3 keeps the deprecated address.
     { hostname = "ns3", address = "10.0.0.3" },
   ]
   soa = { rname = "hostmaster" }`)
@@ -1596,9 +1652,10 @@ func TestZoneResourceDualStackDrift(t *testing.T) {
 	})
 }
 
-// TestZoneResourceImportLegacyAddress imports a zone whose configuration
-// still uses the deprecated address: glue imports as addresses, so the first
-// plan moves it to address in place, without changing any glue record.
+// TestZoneResourceImportLegacyAddress is legacy coverage: it imports a zone
+// whose configuration still uses the deprecated address. Glue imports as
+// addresses, so the first plan moves it to address in place, without
+// changing any glue record.
 func TestZoneResourceImportLegacyAddress(t *testing.T) {
 	t.Parallel()
 	fake := newFakePDNS(t)

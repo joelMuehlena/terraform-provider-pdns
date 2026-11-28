@@ -253,7 +253,7 @@ func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 							ElementType: types.StringType,
 							Description: "The IP addresses of the nameserver (glue), e.g. an IPv4 and an IPv6 address for dual-stack glue; conflicts with the deprecated `address`. " +
 								"The provider manages them as the A record (all IPv4 addresses) and the AAAA record (all IPv6 addresses) at the hostname, " +
-								"holding exactly these addresses: a record of a family without addresses is deleted. Like `address`, it can only be set for " +
+								"holding exactly these addresses: a record of a family without addresses is deleted. They can only be set for " +
 								"nameservers inside the zone, and records changed, extended or removed outside of Terraform show as difference in the next plan " +
 								"and are restored by the apply. Each address can only be listed once (also in another spelling of an IPv6 address). " +
 								"Switching between `address` and `addresses` with the same address keeps the glue record. " +
@@ -270,7 +270,7 @@ func (r *ZoneResource) Schema(ctx context.Context, req resource.SchemaRequest, r
 			},
 			"ttl": schema.Int64Attribute{
 				MarkdownDescription: "The TTL (in seconds) of the records the provider writes for the zone: the SOA record, the NS records " +
-					"at the zone apex and the A/AAAA (glue) records of the nameservers with an `address` or `addresses`. Changes are applied in place. " +
+					"at the zone apex and the A/AAAA (glue) records of the nameservers with `addresses` (or the deprecated `address`). Changes are applied in place. " +
 					"It is read back from the SOA record (from the NS records with `soa.create_record = false`). Not to be confused with " +
 					"`soa.ttl`, the negative caching TTL. Defaults to `" + strconv.Itoa(defaultZoneTTL) + "`.",
 				Optional: true,
