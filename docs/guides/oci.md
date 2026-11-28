@@ -102,9 +102,17 @@ paths are lowercase.
 Each GitHub release has `terraform-provider-pdns_<version>_SHA256SUMS`, the
 SHA-256 of every zip and of `terraform-provider-pdns_<version>_manifest.json`,
 and its detached GPG signature `terraform-provider-pdns_<version>_SHA256SUMS.sig`.
-With the release signing key in your keyring:
+The public keys are in
+[`signing-keys.asc`](https://github.com/joelMuehlena/terraform-provider-pdns/blob/main/signing-keys.asc)
+and registered with the Terraform and OpenTofu registries:
+
+| Key | Fingerprint | Signs |
+| --- | --- | --- |
+| ed25519 `A57F07EF6DCBE584` | `504C C366 3F83 F71B 372E  FACD A57F 07EF 6DCB E584` | releases after v0.3.0 |
+| rsa4096 `E4CF7FA9B79D791C` | `1A43 2CE0 2F50 5D0A 77BA  45CC E4CF 7FA9 B79D 791C` | v0.3.0 and earlier (retired, no longer used) |
 
 ```sh
+gpg --import signing-keys.asc
 gh release download v0.4.0 --repo joelMuehlena/terraform-provider-pdns \
   --pattern '*_SHA256SUMS*' --pattern '*_linux_amd64.zip'
 gpg --verify terraform-provider-pdns_0.4.0_SHA256SUMS.sig terraform-provider-pdns_0.4.0_SHA256SUMS
